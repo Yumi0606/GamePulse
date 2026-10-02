@@ -1,0 +1,23 @@
+{
+  "name": "game-feed-aggregator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "游戏官号 B站动态聚合：拉取、归一化、去重，输出多游戏 RSS",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "fetch": "tsx src/index.ts",
+    "web": "tsx src/web/server.ts"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
