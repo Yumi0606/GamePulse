@@ -1,5 +1,6 @@
 import { XMLParser } from 'fast-xml-parser';
 import type { Game, Item, SourceAdapter } from '../types.js';
+import { normalizeImageUrl } from '../ocr.js';
 import { moduleLogger } from '../logger.js';
 
 const log = moduleLogger('adapter.rsshub-bilibili');
@@ -37,12 +38,12 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, '&');
 }
 
-/** 从动态 HTML 提取全部图片 URL（按出现顺序） */
+/** 从动态 HTML 提取全部图片 URL（按出现顺序；经 normalizeImageUrl 规范化，保证 OCR 幂等键稳定） */
 function extractImageUrls(html: string): string[] {
   const urls: string[] = [];
   const re = /<img[^>]*\ssrc="([^"]+)"[^>]*>/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null) urls.push(m[1]);
+  while ((m = re.exec(html)) !== null) urls.push(normalizeImageUrl(m[1]));
   return urls;
 }
 

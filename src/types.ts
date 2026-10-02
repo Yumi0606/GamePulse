@@ -19,7 +19,7 @@ export interface Game {
   enabled: boolean;
 }
 
-/** 归一化后的标准条目 */
+/** 归一化后的标准条目（当前即"原始动态"，存储于 posts 表；拆分产物存 entries 表） */
 export interface Item {
   /** 本系统内稳定唯一 id：`${gameId}:${type}:${sourceId}` */
   id: string;
@@ -43,8 +43,6 @@ export interface Item {
   description?: string;
   /** 动态携带的原始图片 URL 列表（海报/长图，OCR 的输入），无图可空 */
   images?: string[];
-  /** 各图片的 OCR 文本（按 images 顺序；识别失败的图片不在此列），无图或未识别可空 */
-  ocrTexts?: { imageUrl: string; text: string }[];
 }
 
 /** 信息源适配器契约：每个信息源实现一个，输出标准条目 */

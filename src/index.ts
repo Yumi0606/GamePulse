@@ -1,5 +1,5 @@
 import { runFetchOnce } from './scheduler.js';
-import { loadItems } from './store.js';
+import { loadPosts } from './store.js';
 import { GAMES } from './games.js';
 
 /**
@@ -16,12 +16,12 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    '\n本批次：%d 条（新增 %d / 更新 %d，用时 %dms），已写入 data/items.json',
+    '\n本批次：%d 条（新增 %d / 更新 %d，用时 %dms），已写入 data/feed.db',
     meta.fetched, meta.added, meta.updated, meta.durationMs,
   );
 
   // 打印库存摘要（读本地存储）
-  const items = await loadItems();
+  const items = await loadPosts();
   const byGame = new Map<string, number>();
   for (const item of items) {
     byGame.set(item.gameId, (byGame.get(item.gameId) ?? 0) + 1);

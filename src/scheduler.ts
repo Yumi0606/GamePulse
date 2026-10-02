@@ -1,5 +1,5 @@
 import { runPipeline } from './pipeline.js';
-import { saveMeta, upsertItems, type FetchMeta } from './store.js';
+import { saveMeta, upsertPosts, type FetchMeta } from './store.js';
 import { enrichOcr } from './enrich.js';
 import { moduleLogger } from './logger.js';
 
@@ -36,7 +36,7 @@ export async function runFetchOnce(): Promise<FetchMeta> {
   log.info('同步开始');
 
   const { items, errors } = await runPipeline();
-  const { added, updated } = await upsertItems(items);
+  const { added, updated } = await upsertPosts(items);
   log.info('库存合并 fetched=%d added=%d updated=%d errors=%d', items.length, added, updated, errors.length);
 
   // 结构化处理链第一步：对新图片补 OCR（侧车未启动时内部跳过并告警，不阻断）

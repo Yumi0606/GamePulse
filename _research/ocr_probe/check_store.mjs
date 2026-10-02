@@ -1,11 +1,12 @@
-/** 抽查库存 OCR 富化结果：统计覆盖数、打印一条长图条目的 ocrTexts。
+/** 抽查库存 OCR 富化结果（SQLite 存储）：统计覆盖数、打印一条长图条目的 ocrTexts。
  * 用法：node _research/ocr_probe/check_store.mjs
  */
 
-import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 
-const map = JSON.parse(readFileSync('data/items.json', 'utf8'));
-const items = Object.values(map);
+const db = new DatabaseSync('data/feed.db', { readOnly: true });
+const rows = db.prepare('SELECT payload FROM items').all();
+const items = rows.map((r) => JSON.parse(r.payload));
 const withImages = items.filter((it) => (it.images?.length ?? 0) > 0);
 const withOcr = items.filter((it) => (it.ocrTexts?.length ?? 0) > 0);
 console.log(`库存 ${items.length} 条 | 带图 ${withImages.length} 条 | 已 OCR ${withOcr.length} 条`);

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { GAMES } from '../games.js';
 import { startScheduler } from '../scheduler.js';
-import { loadItems, loadMeta, type FetchMeta, type StoredItem } from '../store.js';
+import { loadPosts, loadMeta, type FetchMeta, type StoredPost } from '../store.js';
 import { buildGameRss } from '../rss.js';
 import type { Item } from '../types.js';
 
@@ -120,7 +120,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const path = req.url?.split('?')[0] ?? '/';
   try {
     // 只读本地存储；数据新鲜度由定时任务保证
-    const items: StoredItem[] = await loadItems();
+    const items: StoredPost[] = await loadPosts();
     const meta = await loadMeta();
 
     if (path === '/') {
