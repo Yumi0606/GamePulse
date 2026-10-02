@@ -1,6 +1,8 @@
 import { runPipeline } from './pipeline.js';
 import { saveMeta, upsertPosts, type FetchMeta } from './store.js';
 import { enrichOcr } from './enrich.js';
+import { extractEntries } from './extract.js';
+import { GAMES } from './games.js';
 import { moduleLogger } from './logger.js';
 
 const log = moduleLogger('scheduler');
@@ -41,6 +43,10 @@ export async function runFetchOnce(): Promise<FetchMeta> {
 
   // 结构化处理链第一步：对新图片补 OCR（侧车未启动时内部跳过并告警，不阻断）
   const ocr = await enrichOcr();
+
+  // 结构化处理链第二步：LLM 拆分为活动/卡池/公告（未配置 LLM 时内部跳过，不阻断）
+  const gameNames = Object.fromEntries(GAMES.map((g) => [g.id, g.name]));
+  const extract = await extractEntries(gameNames);
 
   const meta: FetchMeta = {
     lastRunAt: Math.floor(startedAt / 1000),

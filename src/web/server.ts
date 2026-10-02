@@ -1,16 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { GAMES } from '../games.js';
 import { startScheduler } from '../scheduler.js';
-import { loadPosts, loadMeta, type FetchMeta, type StoredPost } from '../store.js';
+import { loadPosts, loadEntries, loadMeta, type FetchMeta, type StoredPost, type StoredEntry } from '../store.js';
 import { buildGameRss } from '../rss.js';
 import type { Item } from '../types.js';
 
 /**
- * v1 极简 Web 服务。
- * - GET /                      极简展示页（按游戏分组列出条目）
+ * v1.5 Web 服务。
+ * - GET /                      极简展示页（动态按游戏分组 + 结构化条目区块）
  * - GET /rss/<gameId>          单个游戏 RSS
  * - GET /rss                   全游戏聚合 RSS
- * 数据读本地存储（data/items.json），由定时任务刷新，请求不再实时拉取。
+ * 数据读本地存储（data/feed.db），由定时任务刷新，请求不再实时拉取。
  */
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -23,12 +23,44 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** 格式化 Unix 秒为北京时间 "YYYY-MM-DD HH:mm"（游戏服务器时间=北京时间，固定时区不受部署环境影响） */
+function fmtCst(unix: number): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(unix * 1000)).replace(/\//g, '-');
+}
+
+/** 结构化条目区块（LLM 拆分产物：活动/卡池/公告，按结束时间升序） */
+function renderEntries(entries: StoredEntry[]): string {
+  if (entries.length === 0) {
+    return `  <h2>结构化条目 <small>（暂无，等待 LLM 处理）</small></h2>`;
+  }
+  const TYPE_LABEL: Record<string, string> = {
+    ACTIVITY: '活动', GACHA: '卡池', SHOP: '商店', COLLAB: '联动', ANNOUNCEMENT: '公告', NEWS: '动态',
+  };
+  const fmt = (unix?: number): string => (unix ? fmtCst(unix) : '—');
+  const rows = entries
+    .map((e) => {
+      const game = GAMES.find((g) => g.id === e.gameId);
+      const ref = e.payload.endRef ? `（${escapeHtml(e.payload.endRef.refText)}）` : '';
+      const conf = e.payload.confidence < 0.7 ? ` <span class="low-conf">置信 ${e.payload.confidence.toFixed(1)}</span>` : '';
+      return `      <li><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${ref}</span><span class="tag">${TYPE_LABEL[e.type] ?? e.type}</span>${escapeHtml(game?.name ?? e.gameId)}：<a href="${escapeHtml(e.url ?? '')}" target="_blank" rel="noopener">${escapeHtml(e.title)}</a>${conf}</li>`;
+    })
+    .join('\n');
+  return `  <h2>结构化条目 <small>（${entries.length}）</small></h2>
+  <ul class="entries">
+${rows}
+  </ul>`;
+}
+
 /** 极简展示页 */
-function renderPage(items: Item[], meta: FetchMeta | null): string {
+function renderPage(items: Item[], meta: FetchMeta | null, entries: StoredEntry[]): string {
   // 头部状态行：条目数、最近拉取时间与结果
   let metaLine = '';
   if (meta) {
-    const time = new Date(meta.lastRunAt * 1000).toISOString().slice(0, 16).replace('T', ' ');
+    const time = fmtCst(meta.lastRunAt);
     metaLine = ` · 最近拉取 ${time}（新增 ${meta.added} / 更新 ${meta.updated}，用时 ${(meta.durationMs / 1000).toFixed(1)}s）`;
   } else {
     metaLine = ' · 尚未拉取，等待定时任务';
@@ -42,7 +74,7 @@ function renderPage(items: Item[], meta: FetchMeta | null): string {
       .sort((a, b) => b.publishedAt - a.publishedAt);
     const rows = list
       .map((it) => {
-        const date = new Date(it.publishedAt * 1000).toISOString().slice(0, 16).replace('T', ' ');
+        const date = fmtCst(it.publishedAt);
         // 悬停显示正文前 200 字；有图时标注数量
         const tip = it.description ? escapeHtml(it.description.slice(0, 200)) : '';
         const imgs = it.images ? ` <span class="imgs">[图 x${it.images.length}]</span>` : '';
@@ -74,11 +106,14 @@ ${rows}
   a:hover { text-decoration: underline; }
   .err { color: #c01c28; font-size: 13px; }
   .imgs { color: #888; font-size: 12px; }
+  .tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 3px; background: #eef3fa; color: #1a5fb4; font-size: 12px; }
+  .low-conf { color: #c01c28; font-size: 12px; }
 </style>
 </head>
 <body>
   <h1>游戏官号动态聚合</h1>
   <p>共 ${items.length} 条${metaLine} · <a href="/rss">聚合 RSS</a></p>${errorLine}
+${renderEntries(entries)}
 ${sections}
 </body>
 </html>
@@ -124,8 +159,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     const meta = await loadMeta();
 
     if (path === '/') {
+      const entries: StoredEntry[] = await loadEntries();
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(renderPage(items, meta));
+      res.end(renderPage(items, meta, entries));
       return;
     }
 

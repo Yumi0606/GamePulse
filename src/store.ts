@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import type { Item } from './types.js';
+import type { Entry, Item } from './types.js';
 import { normalizeImageUrl } from './ocr.js';
 import { moduleLogger } from './logger.js';
 
@@ -89,7 +89,9 @@ function openDb(): DatabaseSync {
       description   TEXT,               -- 正文纯文本（HTML 去标签），LLM 结构化的文本输入之一
       images        TEXT,               -- 图片 URL 列表（JSON 数组字符串），OCR 的输入；无图为 NULL
       first_seen_at INTEGER NOT NULL,   -- 首次入库时间，Unix 秒（拉取覆盖时保留）
-      updated_at    INTEGER NOT NULL    -- 内容最近一次变化时间，Unix 秒；内容未变不刷新（下游幂等依据）
+      updated_at    INTEGER NOT NULL,   -- 内容最近一次变化时间，Unix 秒；内容未变不刷新（下游幂等依据）
+      extracted_at  INTEGER,            -- LLM 结构化完成时间，Unix 秒；NULL=未处理（含预过滤跳过也写入）
+      extract_attempts INTEGER NOT NULL DEFAULT 0 -- LLM 结构化累计尝试次数（失败重试用）
     );
     -- 展示层按游戏分组倒序取数
     CREATE INDEX IF NOT EXISTS idx_posts_game ON posts(game_id, published_at DESC);
@@ -138,28 +140,42 @@ function openDb(): DatabaseSync {
   migrateFromJsonFiles(db);
   migrateFromItemsTable(db);
   migrateOcrRecords(db);
+  migratePostsExtract(db);
   return db;
 }
 
+/** 为已有旧库表补列（列已存在则跳过）；返回是否补了列 */
+function ensureColumn(db: DatabaseSync, table: string, column: string, ddl: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
+  if (cols.some((c) => c.name === column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  return true;
+}
+
 /**
- * 旧库 ocr_records/posts 迁移（仅旧版库会走到）：
+ * 旧库 ocr_records 迁移（幂等，可反复执行）：
  * 1. 补状态列（status/attempts/last_error）；
- * 2. 幂等键规范化——posts.images 与 ocr_records.image_url 统一重写为 normalizeImageUrl 形态，
- *    两侧一致避免既有 OCR 记录因键不匹配被全量重跑。
+ * 2. 幂等键规范化——存在旧格式键（含协议或主机号的完整 URL）时，
+ *    重写 ocr_records.image_url 与 posts.images 为 normalizeImageUrl 形态，两侧一致。
  */
 function migrateOcrRecords(db: DatabaseSync): void {
-  const cols = db.prepare('PRAGMA table_info(ocr_records)').all() as unknown as { name: string }[];
-  if (cols.length === 0) return; // 全新库（表已按最新 DDL 建立）
-  if (cols.some((c) => c.name === 'status')) return;
+  const added =
+    Number(ensureColumn(db, 'ocr_records', 'status', "status TEXT NOT NULL DEFAULT 'ok'")) +
+    Number(ensureColumn(db, 'ocr_records', 'attempts', 'attempts INTEGER NOT NULL DEFAULT 0')) +
+    Number(ensureColumn(db, 'ocr_records', 'last_error', 'last_error TEXT'));
+  if (added > 0) log.info('ocr_records 已补状态列 count=%d', added);
 
-  db.exec("ALTER TABLE ocr_records ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'");
-  db.exec('ALTER TABLE ocr_records ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
-  db.exec('ALTER TABLE ocr_records ADD COLUMN last_error TEXT');
+  // 旧格式键 = 带协议主机号的完整 URL；规范化后键固定为 https://i0.hdslb.com/...，检测需排除之
+  const hasLegacyKey = db
+    .prepare("SELECT 1 FROM ocr_records WHERE image_url LIKE '//%' OR (image_url LIKE 'http%' AND image_url NOT LIKE 'https://i0.hdslb.com/%') LIMIT 1")
+    .get();
+  if (!hasLegacyKey) return;
 
   const rows = db.prepare('SELECT image_url FROM ocr_records').all() as unknown as { image_url: string }[];
   const upd = db.prepare('UPDATE ocr_records SET image_url = ? WHERE image_url = ?');
   const hasKey = db.prepare('SELECT 1 FROM ocr_records WHERE image_url = ?');
   const del = db.prepare('DELETE FROM ocr_records WHERE image_url = ?');
+  let changed = 0;
   db.exec('BEGIN');
   try {
     for (const r of rows) {
@@ -168,21 +184,33 @@ function migrateOcrRecords(db: DatabaseSync): void {
       // 规范化后撞键（同图异主机记录）时保留先到行、删除旧行
       if (hasKey.get(norm)) del.run(r.image_url);
       else upd.run(norm, r.image_url);
+      changed++;
+    }
+    if (changed === 0) {
+      db.exec('COMMIT');
+      return;
     }
     // posts.images 同步重写，保证差集查询两侧键一致
     const posts = db.prepare('SELECT id, images FROM posts WHERE images IS NOT NULL').all() as unknown as { id: string; images: string }[];
     const updPost = db.prepare('UPDATE posts SET images = ? WHERE id = ?');
     for (const p of posts) {
       const list = JSON.parse(p.images) as string[];
-      const normalized = list.map(normalizeImageUrl);
-      updPost.run(JSON.stringify(normalized), p.id);
+      updPost.run(JSON.stringify(list.map(normalizeImageUrl)), p.id);
     }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  log.info('ocr_records 已迁移：补状态列 + 幂等键规范化 rows=%d', rows.length);
+  log.info('OCR 幂等键已规范化重写 ocrRows=%d', changed);
+}
+
+/** 旧库 posts 表补 LLM 结构化状态列（幂等） */
+function migratePostsExtract(db: DatabaseSync): void {
+  const added =
+    Number(ensureColumn(db, 'posts', 'extracted_at', 'extracted_at INTEGER')) +
+    Number(ensureColumn(db, 'posts', 'extract_attempts', 'extract_attempts INTEGER NOT NULL DEFAULT 0'));
+  if (added > 0) log.info('posts 已补 LLM 处理状态列 count=%d', added);
 }
 
 /** 旧版 JSON 文件存储一次性导入（仅最早期版本会走到），随后改名留档 */
@@ -332,7 +360,7 @@ export async function upsertPosts(posts: Item[]): Promise<{ added: number; updat
  */
 export async function listUnrecognizedImages(maxAttempts: number): Promise<PendingImage[]> {
   const rows = db.prepare(`
-    SELECT p.id AS post_id, j.value AS image_url
+    SELECT p.id AS postId, j.value AS imageUrl
     FROM posts p, json_each(p.images) j
     LEFT JOIN ocr_records o ON o.image_url = j.value
     WHERE o.image_url IS NULL OR (o.status = 'failed' AND o.attempts < ?)
@@ -385,4 +413,110 @@ export async function loadMeta(): Promise<FetchMeta | null> {
 /** 写入本次拉取统计 */
 export async function saveMeta(meta: FetchMeta): Promise<void> {
   db.prepare('INSERT OR REPLACE INTO meta (id, value) VALUES (1, ?)').run(JSON.stringify(meta));
+}
+
+// ==================== LLM 结构化（v1.5） ====================
+
+interface EntryRow {
+  id: string;
+  post_id: string | null;
+  game_id: string;
+  type: string;
+  source: string;
+  source_id: string;
+  title: string;
+  url: string | null;
+  published_at: number | null;
+  start_at: number | null;
+  end_at: number | null;
+  payload: string;
+  first_seen_at: number;
+  updated_at: number;
+}
+
+/** entries 表行：结构化条目 + 库存元数据 */
+export interface StoredEntry extends Entry {
+  /** 首次入库时间，Unix 秒 */
+  firstSeenAt: number;
+  /** 内容最近一次变化时间，Unix 秒 */
+  updatedAt: number;
+}
+
+function rowToEntry(row: EntryRow): StoredEntry {
+  return {
+    id: row.id,
+    postId: row.post_id ?? undefined,
+    gameId: row.game_id,
+    type: row.type as Entry['type'],
+    source: row.source,
+    sourceId: row.source_id,
+    title: row.title,
+    url: row.url ?? undefined,
+    publishedAt: row.published_at ?? undefined,
+    startAt: row.start_at ?? undefined,
+    endAt: row.end_at ?? undefined,
+    payload: JSON.parse(row.payload) as Entry['payload'],
+    firstSeenAt: row.first_seen_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * 列出待 LLM 结构化的动态：
+ * 从未处理（extracted_at 为 NULL）或处理后内容又更新（extracted_at < updated_at），
+ * 且尝试次数未达上限。
+ */
+export async function listPostsToExtract(maxAttempts: number): Promise<StoredPost[]> {
+  const rows = db.prepare(`
+    SELECT * FROM posts
+    WHERE (extracted_at IS NULL OR extracted_at < updated_at) AND extract_attempts < ?
+    ORDER BY published_at DESC
+  `).all(maxAttempts) as unknown as PostRow[];
+  return rows.map(rowToPost);
+}
+
+/** 标记动态已结构化（含"预过滤跳过：无需结构化"的情形） */
+export async function markExtracted(postId: string): Promise<void> {
+  db.prepare('UPDATE posts SET extracted_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), postId);
+}
+
+/** 记一次结构化失败（attempts 累加，达上限后由查询条件自动放弃） */
+export async function markExtractFailure(postId: string): Promise<void> {
+  db.prepare('UPDATE posts SET extract_attempts = extract_attempts + 1 WHERE id = ?').run(postId);
+}
+
+/**
+ * 用一批新条目整体替换某动态的 LLM 结构化产物（事务）：
+ * 重建语义——动态内容变化后旧拆分可能失效（如文案删掉了卡池信息），全删全插保持一致。
+ */
+export async function replaceEntriesForPost(postId: string, entries: Entry[]): Promise<void> {
+  const ins = db.prepare(`
+    INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, payload, first_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const now = Math.floor(Date.now() / 1000);
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM entries WHERE post_id = ?').run(postId);
+    for (const e of entries) {
+      ins.run(
+        e.id, e.postId ?? null, e.gameId, e.type, e.source, e.sourceId, e.title,
+        e.url ?? null, e.publishedAt ?? null, e.startAt ?? null, e.endAt ?? null,
+        JSON.stringify(e.payload), now, now,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** 读取全量结构化条目（按结束时间升序，NULL 排最后） */
+export async function loadEntries(): Promise<StoredEntry[]> {
+  const rows = db.prepare(`
+    SELECT * FROM entries
+    ORDER BY (end_at IS NULL), end_at, published_at DESC
+  `).all() as unknown as EntryRow[];
+  return rows.map(rowToEntry);
 }
