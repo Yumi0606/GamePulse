@@ -1,9 +1,9 @@
 {
-  "name": "game-feed-aggregator",
+  "name": "gamepulse",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "游戏官号 B站动态聚合：拉取、归一化、去重，输出多游戏 RSS",
+  "description": "GamePulse 游戏活动数据源整合：官号动态 → OCR → LLM 结构化 → SQLite + RSS/日历",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "sync": "tsx src/index.ts",
