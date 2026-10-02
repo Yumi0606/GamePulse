@@ -7,6 +7,9 @@ dist/
 # 本地数据存储（条目库存与拉取统计，不入库）
 data/
 
+# OCR 侧车虚拟环境
+ocr-service/.venv/
+
 # 日志
 *.log
 npm-debug.log*
@@ -19,6 +22,8 @@ pnpm-debug.log*
 
 # 调研探针目录内的依赖（保留探针源码与原始数据，忽略其依赖）
 _research/rssworker_probe/node_modules/
+_research/ocr_probe/.venv/
+_research/ocr_probe/*.png
 
 # 系统/编辑器
 Thumbs.db

@@ -41,7 +41,8 @@ async function main(): Promise<void> {
     console.log('\n【%s】', game.name);
     for (const it of gameItems) {
       const date = new Date(it.publishedAt * 1000).toISOString().slice(0, 16).replace('T', ' ');
-      console.log('  %s  %s', date, it.title.slice(0, 50));
+      const tag = it.images ? `（${it.images.length} 图）` : '';
+      console.log('  %s  %s%s', date, it.title.slice(0, 50), tag);
     }
   }
 }

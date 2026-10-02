@@ -69,7 +69,8 @@ export async function loadMeta(): Promise<FetchMeta | null> {
 
 /**
  * 增量合并一批条目并落盘：
- * 新 id 插入（firstSeenAt=now）；已有 id 用新数据覆盖公共字段并保留 firstSeenAt；
+ * 新 id 插入（firstSeenAt=now）；已有 id 用新数据覆盖拉取层字段并保留 firstSeenAt；
+ * ocrTexts 属富化产物，不随拉取覆盖——仅保留仍存在于新图片列表中的部分（图片列表变化时自动裁剪）；
  * 内容无变化的不刷新 updatedAt，保证后续处理链可按"内容是否变过"做幂等。
  */
 export async function upsertItems(items: Item[]): Promise<{ added: number; updated: number }> {
@@ -85,11 +86,15 @@ export async function upsertItems(items: Item[]): Promise<{ added: number; updat
       added++;
       continue;
     }
-    const { firstSeenAt, updatedAt: _u, ...core } = existing;
-    if (JSON.stringify(core) !== JSON.stringify(item)) {
-      map[item.id] = { ...item, firstSeenAt, updatedAt: now };
-      updated++;
-    }
+    // 富化字段保留：旧 OCR 结果裁剪到新图片列表（undefined 时 JSON 比较自然忽略该键）
+    const kept = (existing.ocrTexts ?? []).filter((t) => (item.images ?? []).includes(t.imageUrl));
+    const merged: Item = { ...item, ocrTexts: kept.length > 0 ? kept : undefined };
+    // 内容变化只看拉取层字段（existing 剔除富化与元数据后与 item 比较），
+    // 避免已富化的 ocrTexts 让每轮都误判"有更新"并刷新 updatedAt
+    const { firstSeenAt, updatedAt: _u, ocrTexts: _old, ...core } = existing;
+    const contentChanged = JSON.stringify(core) !== JSON.stringify(item);
+    map[item.id] = { ...merged, firstSeenAt, updatedAt: contentChanged ? now : existing.updatedAt };
+    if (contentChanged) updated++;
   }
 
   await writeJsonAtomic(ITEMS_FILE, map);
@@ -99,4 +104,14 @@ export async function upsertItems(items: Item[]): Promise<{ added: number; updat
 /** 写入本次拉取统计 */
 export async function saveMeta(meta: FetchMeta): Promise<void> {
   await writeJsonAtomic(META_FILE, meta);
+}
+
+/** 按 id 更新条目的部分字段落盘（保留 firstSeenAt、刷新 updatedAt）；条目不存在返回 false */
+export async function updateItem(id: string, patch: Partial<Item>): Promise<boolean> {
+  const map = await readJson<ItemMap>(ITEMS_FILE, {});
+  const existing = map[id];
+  if (!existing) return false;
+  map[id] = { ...existing, ...patch, firstSeenAt: existing.firstSeenAt, updatedAt: Math.floor(Date.now() / 1000) };
+  await writeJsonAtomic(ITEMS_FILE, map);
+  return true;
 }

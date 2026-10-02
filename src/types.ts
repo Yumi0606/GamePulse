@@ -39,6 +39,12 @@ export interface Item {
   publishedAt: number;
   /** 作者/账号名，可空 */
   author?: string;
+  /** 正文纯文本（由动态 HTML 去标签得到，OCR/LLM 结构化的输入），可空 */
+  description?: string;
+  /** 动态携带的原始图片 URL 列表（海报/长图，OCR 的输入），无图可空 */
+  images?: string[];
+  /** 各图片的 OCR 文本（按 images 顺序；识别失败的图片不在此列），无图或未识别可空 */
+  ocrTexts?: { imageUrl: string; text: string }[];
 }
 
 /** 信息源适配器契约：每个信息源实现一个，输出标准条目 */

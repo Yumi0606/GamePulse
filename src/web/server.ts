@@ -43,7 +43,10 @@ function renderPage(items: Item[], meta: FetchMeta | null): string {
     const rows = list
       .map((it) => {
         const date = new Date(it.publishedAt * 1000).toISOString().slice(0, 16).replace('T', ' ');
-        return `      <li><span class="date">${date}</span><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a></li>`;
+        // 悬停显示正文前 200 字；有图时标注数量
+        const tip = it.description ? escapeHtml(it.description.slice(0, 200)) : '';
+        const imgs = it.images ? ` <span class="imgs">[图 x${it.images.length}]</span>` : '';
+        return `      <li><span class="date">${date}</span><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" title="${tip}">${escapeHtml(it.title)}</a>${imgs}</li>`;
       })
       .join('\n');
     return `    <section>
@@ -70,6 +73,7 @@ ${rows}
   a { color: #1a5fb4; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .err { color: #c01c28; font-size: 13px; }
+  .imgs { color: #888; font-size: 12px; }
 </style>
 </head>
 <body>
