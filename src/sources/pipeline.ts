@@ -1,8 +1,8 @@
-import type { Item } from './types.js';
-import { enabledGames } from './games.js';
+import type { Item } from '../core/types.js';
+import { enabledGames } from '../core/games.js';
 import { rsshubBilibiliAdapter } from './adapters/rsshubBilibili.js';
 import { dedup } from './dedup.js';
-import { moduleLogger } from './logger.js';
+import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('pipeline');
 

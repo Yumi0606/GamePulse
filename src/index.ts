@@ -1,6 +1,6 @@
 import { runFetchOnce } from './scheduler.js';
-import { loadPosts } from './store.js';
-import { GAMES } from './games.js';
+import { loadPosts } from './storage/store.js';
+import { GAMES } from './core/games.js';
 
 /**
  * 命令行入口：手动跑一次拉取并落盘（与定时任务同一逻辑），然后打印库存摘要。

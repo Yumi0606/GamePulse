@@ -1,8 +1,8 @@
 /** OCR 失败重试状态机测试（直调 store API，不跑 sync 避免 posts.images 被源覆盖）。
  * 用法：node _research/ocr_probe/test_retry.mjs run|cleanup */
 
-import { saveOcrFailure, saveOcrRecord, listUnrecognizedImages, loadOcrTexts } from '../../dist/store.js';
-import { normalizeImageUrl } from '../../dist/ocr.js';
+import { saveOcrFailure, saveOcrRecord, listUnrecognizedImages, loadOcrTexts } from '../../dist/storage/store.js';
+import { normalizeImageUrl } from '../../dist/core/imageUrl.js';
 import { DatabaseSync } from 'node:sqlite';
 
 const DEAD_URL = 'http://i1.hdslb.com/bfs/new_dyn/__test_dead__.png';

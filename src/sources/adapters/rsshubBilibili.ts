@@ -1,7 +1,7 @@
 import { XMLParser } from 'fast-xml-parser';
-import type { Game, Item, SourceAdapter } from '../types.js';
-import { normalizeImageUrl } from '../ocr.js';
-import { moduleLogger } from '../logger.js';
+import type { Game, Item, SourceAdapter } from '../../core/types.js';
+import { normalizeImageUrl } from '../../core/imageUrl.js';
+import { moduleLogger } from '../../core/logger.js';
 
 const log = moduleLogger('adapter.rsshub-bilibili');
 

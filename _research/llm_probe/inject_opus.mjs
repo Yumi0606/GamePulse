@@ -3,8 +3,8 @@
  * 用法：node _research/llm_probe/inject_opus.mjs
  */
 
-import { upsertPosts } from '../../dist/store.js';
-import { enrichOcr } from '../../dist/enrich.js';
+import { upsertPosts } from '../../dist/storage/store.js';
+import { enrichOcr } from '../../dist/processing/enrich.js';
 
 // 浏览器抓取的完整正文（截去尾部游戏卡片杂讯）
 const desc = `#明日方舟终末地# #雪凇幽梦#

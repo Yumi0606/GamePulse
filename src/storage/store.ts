@@ -1,9 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import type { Entry, Item } from './types.js';
-import { normalizeImageUrl } from './ocr.js';
-import { moduleLogger } from './logger.js';
+import type { Entry, Item } from '../core/types.js';
+import { normalizeImageUrl } from '../core/imageUrl.js';
+import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('store');
 

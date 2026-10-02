@@ -1,9 +1,9 @@
-import type { Entry, EntryPayload, EntryType } from './types.js';
-import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type StoredPost } from './store.js';
+import type { Entry, EntryPayload, EntryType } from '../core/types.js';
+import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type StoredPost } from '../storage/store.js';
 import { chatJSON, llmConfig, llmEnabled } from './llm.js';
-import { GAMES } from './games.js';
-import { envNum, envStr } from './env.js';
-import { moduleLogger } from './logger.js';
+import { GAMES } from '../core/games.js';
+import { envNum, envStr } from '../core/env.js';
+import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('extract');
 

@@ -1,5 +1,5 @@
-import { envNum, envStr } from './env.js';
-import { moduleLogger } from './logger.js';
+import { envNum, envStr } from '../core/env.js';
+import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('llm');
 

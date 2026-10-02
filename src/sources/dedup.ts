@@ -1,4 +1,4 @@
-import type { Item } from './types.js';
+import type { Item } from '../core/types.js';
 
 /**
  * 信息去重。对应 PRD §5.2：

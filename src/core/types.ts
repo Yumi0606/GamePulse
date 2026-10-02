@@ -56,6 +56,15 @@ export interface SourceAdapter {
 /** 结构化条目大类：NEWS 不入 entries（posts 已覆盖展示），entries 只收"可排期"的大类 */
 export type EntryType = Exclude<ItemType, 'NEWS'>;
 
+/** 条目大类的中文展示标签（展示层与 RSS 共用） */
+export const ENTRY_TYPE_LABEL: Record<EntryType, string> = {
+  ACTIVITY: '活动',
+  GACHA: '卡池',
+  SHOP: '商店',
+  COLLAB: '联动',
+  ANNOUNCEMENT: '公告',
+};
+
 /** 图片（调研报告 §4 Image） */
 export interface Image {
   /** 图片 URL */

@@ -15,16 +15,6 @@ export interface OcrOutcome {
 /** 单次 OCR 请求超时（毫秒）：含侧车下载图片与推理（长图约 3s，留足余量） */
 const OCR_TIMEOUT_MS = 120_000;
 
-/**
- * 规范化图片 URL 作为 OCR 幂等键：
- * 补全协议、B站图床多镜像主机（i0~i9.hdslb.com 同内容）统一为 i0，
- * 避免不同源返回不同主机号导致幂等键分裂。
- */
-export function normalizeImageUrl(raw: string): string {
-  const withProto = raw.startsWith('//') ? `https:${raw}` : raw;
-  return withProto.replace(/^(https?):\/\/i\d(\.hdslb\.com)/i, 'https://i0$2');
-}
-
 /** 识别一张图片；网络/服务异常时抛错 */
 export async function recognizeImage(imageUrl: string): Promise<OcrOutcome> {
   const res = await fetch(`${OCR_URL}/ocr`, {

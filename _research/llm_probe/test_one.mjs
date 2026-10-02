@@ -7,8 +7,8 @@
  * 需先 pnpm build，并在 .env 配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL。
  */
 
-import { extractOnePost } from '../../dist/extract.js';
-import { llmConfig } from '../../dist/llm.js';
+import { extractOnePost } from '../../dist/processing/extract.js';
+import { llmConfig } from '../../dist/processing/llm.js';
 
 // 解析命令行参数：--save / --game xxx / --title xxx / --post xxx
 const args = process.argv.slice(2);

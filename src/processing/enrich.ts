@@ -1,6 +1,6 @@
-import { listUnrecognizedImages, saveOcrFailure, saveOcrRecord } from './store.js';
+import { listUnrecognizedImages, saveOcrFailure, saveOcrRecord } from '../storage/store.js';
 import { recognizeImage } from './ocr.js';
-import { moduleLogger } from './logger.js';
+import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('ocr.enrich');
 

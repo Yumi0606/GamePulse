@@ -1,9 +1,9 @@
-import { runPipeline } from './pipeline.js';
-import { saveMeta, upsertPosts, type FetchMeta } from './store.js';
-import { enrichOcr } from './enrich.js';
-import { extractEntries } from './extract.js';
-import { GAMES } from './games.js';
-import { moduleLogger } from './logger.js';
+import { runPipeline } from './sources/pipeline.js';
+import { saveMeta, upsertPosts, type FetchMeta } from './storage/store.js';
+import { enrichOcr } from './processing/enrich.js';
+import { extractEntries } from './processing/extract.js';
+import { GAMES } from './core/games.js';
+import { moduleLogger } from './core/logger.js';
 
 const log = moduleLogger('scheduler');
 
