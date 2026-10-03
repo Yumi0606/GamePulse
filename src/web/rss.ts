@@ -1,4 +1,4 @@
-import type { Game, Item, Entry, EntryType } from '../core/types.js';
+import type { Game, Item, Entry, TimeRef, EntryPhase } from '../core/types.js';
 import { ENTRY_TYPE_LABEL } from '../core/types.js';
 
 /**
@@ -7,6 +7,11 @@ import { ENTRY_TYPE_LABEL } from '../core/types.js';
  * - 结构化条目（buildEntriesRss）：LLM 拆分出的活动/卡池/公告排期，v1.5 产物。
  * 单条 feed（buildSinglePostRss / buildSingleEntryRss）供展示层"查看该条数据的 RSS 格式"入口。
  * item 级 XML 由 postItemXml / entryItemXml 统一生成，聚合 feed 与单条 feed 共用。
+ *
+ * 机读字段承载于自定义命名空间 gp（urn:gamepulse:rss:1）：RSS 2.0 无排期/分段/引用型时间的标准词汇，
+ * 故用扩展元素表达；标准阅读器忽略未知命名空间元素，仅展示 title/description/pubDate。
+ * 约定：gp 内所有时间元素一律为 Unix 秒整数（与存储层一致），消费方自行决定时区展示。
+ * 排除内部库存/质检元数据（firstSeenAt、updatedAt、confidence、provenance、source、sourceId、extra）。
  */
 
 /** XML 转义（文本节点与属性通用的最小集合） */
@@ -39,7 +44,7 @@ function rssDoc(channel: { title: string; link: string; description: string; las
     ? `\n    <lastBuildDate>${toRfc822(channel.lastBuildDate)}</lastBuildDate>`
     : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
+<rss version="2.0" xmlns:gp="urn:gamepulse:rss:1">
   <channel>
     <title>${escapeXml(channel.title)}</title>
     <link>${escapeXml(channel.link)}</link>
@@ -51,28 +56,90 @@ ${itemXml}
 `;
 }
 
-/** 单条原始动态的 RSS item（聚合 feed 与单条 feed 共用）；category 非空时附加分类 */
-function postItemXml(it: Item, category?: string): string {
+/** 生成一行 gp 扩展元素（含缩进）；值为空则不输出该行 */
+function gpLine(indent: string, tag: string, value: string | number | undefined): string {
+  if (value === undefined || value === '') return '';
+  return `${indent}<${tag}>${escapeXml(String(value))}</${tag}>`;
+}
+
+/** 生成一行引用型时间元素；state 必填，refId 有值才作为属性输出 */
+function refLine(indent: string, tag: string, ref?: TimeRef): string {
+  if (!ref) return '';
+  const attrs = [`state="${ref.state}"`];
+  if (ref.refId) attrs.push(`refId="${escapeXml(ref.refId)}"`);
+  return `${indent}<${tag} ${attrs.join(' ')}>${escapeXml(ref.refText)}</${tag}>`;
+}
+
+/** 生成单个活动分段的 gp:phase 元素（含段级引用型时间与预估标记） */
+function phaseLines(p: EntryPhase): string[] {
+  const attrs = [`index="${p.index}"`];
+  if (p.estimated) attrs.push('estimated="true"');
+  const lines = [`        <gp:phase ${attrs.join(' ')}>`];
+  const push = (l: string): void => { if (l) lines.push(l); };
+  push(gpLine('          ', 'gp:title', p.title));
+  push(gpLine('          ', 'gp:startAt', p.startAt));
+  push(gpLine('          ', 'gp:endAt', p.endAt));
+  push(refLine('          ', 'gp:startRef', p.startRef));
+  push(refLine('          ', 'gp:endRef', p.endRef));
+  lines.push('        </gp:phase>');
+  return lines;
+}
+
+/** 单条原始动态的 RSS item（聚合 feed 与单条 feed 共用）；机读字段经 gp 命名空间输出 */
+function postItemXml(it: Item): string {
   const author = it.author ? `\n      <author>${escapeXml(it.author)}</author>` : '';
-  const cat = category ? `\n      <category>${escapeXml(category)}</category>` : '';
+  const desc = it.description ? `\n      <description>${escapeXml(it.description)}</description>` : '';
+  const gameId = `\n      <gp:gameId>${escapeXml(it.gameId)}</gp:gameId>`;
+  const images = (it.images ?? []).map((url) => `\n      <gp:image>${escapeXml(url)}</gp:image>`).join('');
   return `    <item>
       <title>${escapeXml(it.title)}</title>
       <link>${escapeXml(it.url)}</link>
       <guid isPermaLink="false">${escapeXml(it.id)}</guid>
-      <pubDate>${toRfc822(it.publishedAt)}</pubDate>${author}${cat}
+      <pubDate>${toRfc822(it.publishedAt)}</pubDate>${author}${desc}${gameId}${images}
     </item>`;
 }
 
-/** 单条结构化条目的 RSS item；pubDateFallback 为条目无发布时间时的回退值 */
-function entryItemXml(e: Entry, pubDateFallback: number): string {
-  const label = ENTRY_TYPE_LABEL[e.type as EntryType] ?? e.type;
-  return `    <item>
-      <title>[${label}] ${escapeXml(e.title)}${e.payload.estimated ? '（预估）' : ''}</title>
-      <link>${escapeXml(e.url ?? '')}</link>
-      <guid isPermaLink="false">${escapeXml(e.id)}</guid>
-      <pubDate>${toRfc822(e.publishedAt ?? pubDateFallback)}</pubDate>
-      <description>${escapeXml(entryDescription(e))}</description>
-    </item>`;
+/**
+ * 单条结构化条目的 RSS item。
+ * pubDateFallback：条目无发布时间时的回退值；
+ * sourcePost：来源动态，用于在条目无 url 时补链接并输出 gp:sourcePost 溯源。
+ */
+function entryItemXml(e: Entry, pubDateFallback: number, sourcePost?: Item): string {
+  const label = ENTRY_TYPE_LABEL[e.type] ?? e.type;
+  const link = e.url ?? sourcePost?.url;
+  const lines: string[] = [
+    '    <item>',
+    `      <title>[${label}] ${escapeXml(e.title)}${e.payload.estimated ? '（预估）' : ''}</title>`,
+  ];
+  if (link) lines.push(`      <link>${escapeXml(link)}</link>`);
+  lines.push(`      <guid isPermaLink="false">${escapeXml(e.id)}</guid>`);
+  lines.push(`      <pubDate>${toRfc822(e.publishedAt ?? pubDateFallback)}</pubDate>`);
+  lines.push(`      <description>${escapeXml(entryDescription(e))}</description>`);
+
+  const push = (l: string): void => { if (l) lines.push(l); };
+  push(gpLine('      ', 'gp:gameId', e.gameId));
+  push(gpLine('      ', 'gp:type', e.type));
+  push(gpLine('      ', 'gp:category', e.payload.category));
+  push(gpLine('      ', 'gp:startAt', e.startAt));
+  push(gpLine('      ', 'gp:endAt', e.endAt));
+  push(gpLine('      ', 'gp:rewardEndAt', e.payload.rewardEndAt));
+  if (e.payload.estimated) lines.push('      <gp:estimated/>');
+  push(gpLine('      ', 'gp:summary', e.payload.summary));
+  push(gpLine('      ', 'gp:description', e.payload.description));
+  push(gpLine('      ', 'gp:banner', e.payload.banner?.url));
+  for (const tag of e.payload.tags ?? []) push(gpLine('      ', 'gp:tag', tag));
+  push(refLine('      ', 'gp:startRef', e.payload.startRef));
+  push(refLine('      ', 'gp:endRef', e.payload.endRef));
+  if (e.payload.phases?.length) {
+    lines.push('      <gp:phases>');
+    for (const p of e.payload.phases) lines.push(...phaseLines(p));
+    lines.push('      </gp:phases>');
+  }
+  if (sourcePost) {
+    lines.push(`      <gp:sourcePost id="${escapeXml(sourcePost.id)}" url="${escapeXml(sourcePost.url)}">${escapeXml(sourcePost.title)}</gp:sourcePost>`);
+  }
+  lines.push('    </item>');
+  return lines.join('\n');
 }
 
 /** 生成单个游戏的 RSS 文档。条目按发布时间倒序。 */
@@ -99,7 +166,7 @@ export function buildAggregatedRss(items: Item[], channelTitle: string, channelL
   const sorted = [...items].sort((a, b) => b.publishedAt - a.publishedAt);
   return rssDoc(
     { title: channelTitle, link: channelLink, description: '多游戏官号动态聚合' },
-    sorted.map((it) => postItemXml(it, it.gameId)).join('\n'),
+    sorted.map((it) => postItemXml(it)).join('\n'),
   );
 }
 
@@ -118,8 +185,8 @@ function entryDescription(e: Entry): string {
   return parts.join('；');
 }
 
-/** 生成结构化条目的 RSS 文档（排期订阅源）。entries 由调用方排序/过滤。 */
-export function buildEntriesRss(entries: Entry[], channelTitle: string, channelLink: string): string {
+/** 生成结构化条目的 RSS 文档（排期订阅源）。entries 由调用方排序/过滤；postById 用于补条目链接与来源动态溯源。 */
+export function buildEntriesRss(entries: Entry[], channelTitle: string, channelLink: string, postById: Map<string, Item>): string {
   const sorted = [...entries].sort((a, b) => (b.publishedAt ?? 0) - (a.publishedAt ?? 0));
   const latest = sorted[0]?.publishedAt ?? Math.floor(Date.now() / 1000);
   return rssDoc(
@@ -129,7 +196,7 @@ export function buildEntriesRss(entries: Entry[], channelTitle: string, channelL
       description: 'LLM 从官号动态拆分的活动/卡池/公告排期（时间为游戏服务器时间=北京时间）',
       lastBuildDate: latest,
     },
-    sorted.map((e) => entryItemXml(e, latest)).join('\n'),
+    sorted.map((e) => entryItemXml(e, latest, e.postId ? postById.get(e.postId) : undefined)).join('\n'),
   );
 }
 
@@ -142,13 +209,13 @@ export function buildSinglePostRss(post: Item, channelLink: string): string {
       description: `原始动态（${post.gameId}）`,
       lastBuildDate: post.publishedAt,
     },
-    postItemXml(post, post.gameId),
+    postItemXml(post),
   );
 }
 
-/** 单条结构化条目的 RSS 文档 */
-export function buildSingleEntryRss(entry: Entry, channelLink: string): string {
-  const label = ENTRY_TYPE_LABEL[entry.type as EntryType] ?? entry.type;
+/** 单条结构化条目的 RSS 文档；sourcePost 用于补条目链接与来源动态溯源 */
+export function buildSingleEntryRss(entry: Entry, channelLink: string, sourcePost?: Item): string {
+  const label = ENTRY_TYPE_LABEL[entry.type] ?? entry.type;
   const latest = entry.publishedAt ?? Math.floor(Date.now() / 1000);
   return rssDoc(
     {
@@ -157,6 +224,6 @@ export function buildSingleEntryRss(entry: Entry, channelLink: string): string {
       description: `结构化条目（${entry.gameId}）`,
       lastBuildDate: latest,
     },
-    entryItemXml(entry, latest),
+    entryItemXml(entry, latest, sourcePost),
   );
 }

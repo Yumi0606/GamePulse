@@ -82,7 +82,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (path === '/rss/entries') {
       const entries = await loadEntries();
       res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
-      res.end(buildEntriesRss(entries, '游戏活动排期（结构化）', `${BASE}/`));
+      res.end(buildEntriesRss(entries, '游戏活动排期（结构化）', `${BASE}/`, new Map(posts.map((p) => [p.id, p]))));
       return;
     }
 
@@ -92,7 +92,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       if (!game) return notFound(res, '未知游戏');
       const entries = (await loadEntries()).filter((e) => e.gameId === game.id);
       res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
-      res.end(buildEntriesRss(entries, `${game.name} 活动排期`, `${BASE}/`));
+      res.end(buildEntriesRss(entries, `${game.name} 活动排期`, `${BASE}/`, new Map(posts.map((p) => [p.id, p]))));
       return;
     }
 
@@ -111,7 +111,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const entry = id ? (await loadEntries()).find((e) => e.id === id) : undefined;
       if (!entry) return notFound(res, '未找到该条目');
       res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
-      res.end(buildSingleEntryRss(entry, `${BASE}${path}?id=${encodeURIComponent(entry.id)}`));
+      const sourcePost = entry.postId ? posts.find((p) => p.id === entry.postId) : undefined;
+      res.end(buildSingleEntryRss(entry, `${BASE}${path}?id=${encodeURIComponent(entry.id)}`, sourcePost));
       return;
     }
 
