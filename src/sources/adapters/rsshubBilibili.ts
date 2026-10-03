@@ -14,6 +14,21 @@ const log = moduleLogger('adapter.rsshub-bilibili');
 /** 单次 RSS 请求超时（毫秒）：挂起的请求会被强制终结并暴露为错误，避免拖住整个流水线 */
 const FETCH_TIMEOUT_MS = 30_000;
 
+/**
+ * 源拉取错误：kind 供事件表分类（http=上游 HTTP 错误 / network=网络不可达或超时 / parse=响应非有效 RSS）。
+ * detail 携带上游原始错误文本（如 RSSHub 错误页的 Error Message，cookie 失效等详情在此），message 保持一行摘要。
+ */
+export class SourceFetchError extends Error {
+  constructor(
+    public readonly kind: 'http' | 'network' | 'parse',
+    message: string,
+    public readonly detail?: string,
+  ) {
+    super(message);
+    this.name = 'SourceFetchError';
+  }
+}
+
 /** RSSHub 基础地址。默认本机自建实例，可用环境变量覆盖。 */
 const RSSHUB_BASE = process.env.RSSHUB_BASE ?? 'http://localhost:1200';
 
@@ -80,6 +95,14 @@ function extractSourceId(link: string): string {
   return m ? m[1] : link;
 }
 
+/** 从 RSSHub HTML 错误页提取 "Error Message:" 后的原始错误文本（去内嵌标签、解码实体、截断） */
+function extractRsshubErrorDetail(html: string): string | undefined {
+  const m = html.match(/Error Message:<br\/?><code[^>]*>([\s\S]*?)<\/code>/);
+  if (!m) return undefined;
+  const text = decodeEntities(m[1].replace(/<[^>]+>/g, '')).trim();
+  return text ? text.slice(0, 500) : undefined;
+}
+
 /** 把单条原始 item 归一化为标准条目 */
 function normalize(raw: RawItem, game: Game): Item {
   const sourceId = extractSourceId(raw.link);
@@ -107,13 +130,32 @@ export const rsshubBilibiliAdapter: SourceAdapter = {
   async fetch(game: Game): Promise<Item[]> {
     const url = `${RSSHUB_BASE}/bilibili/user/dynamic/${game.bilibiliUid}`;
     log.debug('请求开始 url=%s timeoutMs=%d', url, FETCH_TIMEOUT_MS);
-    const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) {
-      throw new Error(`拉取 ${game.name} 动态失败：HTTP ${res.status}`);
+    let xml: string;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      if (!res.ok) {
+        // 错误页体积有限但仍截断读取，提取其中的原始错误文本（cookie 失效等详情在此）
+        const body = (await res.text()).slice(0, 65_536);
+        const detail = extractRsshubErrorDetail(body);
+        throw new SourceFetchError('http', `拉取 ${game.name} 动态失败：HTTP ${res.status}`, detail);
+      }
+      xml = await res.text();
+    } catch (e) {
+      if (e instanceof SourceFetchError) throw e;
+      // AbortSignal.timeout 超时与连接失败统一归类网络异常
+      throw new SourceFetchError('network', `拉取 ${game.name} 动态失败：网络异常（${(e as Error).message}）`);
     }
-    const xml = await res.text();
     log.debug('请求完成 url=%s bytes=%d', url, xml.length);
-    const data = parser.parse(xml) as RawRss;
+    let data: RawRss;
+    try {
+      data = parser.parse(xml) as RawRss;
+    } catch (e) {
+      throw new SourceFetchError('parse', `拉取 ${game.name} 动态失败：RSS 解析异常（${(e as Error).message}）`);
+    }
+    if (!data?.rss?.channel) {
+      // HTTP 200 但不是 RSS（如 RSSHub 中间层异常页），归入解析失败
+      throw new SourceFetchError('parse', `拉取 ${game.name} 动态失败：响应不是有效 RSS（无 channel）`);
+    }
     const items = data.rss.channel.item;
     if (!items) return [];
     const list = Array.isArray(items) ? items : [items];

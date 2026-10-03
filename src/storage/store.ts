@@ -15,6 +15,7 @@ const log = moduleLogger('store');
  * - ocr_records 图片级 OCR 记录：按 image_url 全局幂等，独立于动态生命周期；
  * - entries     拆分后的标准条目（活动/卡池/公告…，LLM 处理链产物）：一条动态可拆多条，
  *               建表预留，API 随 v1.5 LLM 步骤补充。
+ * 辅助表：meta 拉取批次统计（单行）；events 源健康事件（拉取异常记录 + 自动恢复）。
  *
  * 旧版单表 items（payload JSON 混装）首次访问自动迁移为 posts + ocr_records，表改名 items_v1 留档。
  */
@@ -52,6 +53,34 @@ export interface FetchMeta {
 export interface PendingImage {
   postId: string;
   imageUrl: string;
+}
+
+/** 源健康事件类型：http=上游 HTTP 错误 / network=网络不可达或超时 / parse=响应非有效 RSS / empty=拉取成功但 0 条 */
+export type EventKind = 'http' | 'network' | 'parse' | 'empty';
+
+/** events 表行：源健康事件 */
+export interface StoredEvent {
+  id: number;
+  /** 所属游戏标识；null=系统级事件 */
+  gameId: string | null;
+  kind: EventKind;
+  /** 一行摘要 */
+  summary: string;
+  /** 原始错误文本（如 RSSHub 错误页的 Error Message） */
+  detail: string | null;
+  /** 疑似 B站 cookie 失效 */
+  isCookieSuspect: boolean;
+  /** 发生时间，Unix 秒 */
+  occurredAt: number;
+  /** 恢复时间，Unix 秒；null=未恢复 */
+  resolvedAt: number | null;
+}
+
+/** 未恢复事件计数（主页通知区域用） */
+export interface UnresolvedEventCount {
+  total: number;
+  /** 其中疑似 cookie 失效的数量 */
+  cookieSuspect: number;
 }
 
 interface PostRow {
@@ -143,6 +172,21 @@ function openDb(): DatabaseSync {
       id    INTEGER PRIMARY KEY CHECK (id = 1),  -- 恒为 1
       value TEXT NOT NULL                        -- FetchMeta JSON
     );
+
+    -- 源健康事件：拉取层异常记录（供 Web 异常页与主页通知）。
+    -- 生命周期：发生（resolved_at 为 NULL）→ 同一游戏后续某轮拉取成功且有数据时自动标记恢复
+    CREATE TABLE IF NOT EXISTS events (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id     TEXT,                       -- 所属游戏标识；NULL=系统级事件（预留给非源类异常）
+      kind        TEXT NOT NULL,              -- 异常类型：http=上游 HTTP 错误 / network=网络不可达或超时 / parse=响应非有效 RSS / empty=拉取成功但 0 条
+      summary     TEXT NOT NULL,              -- 一行摘要（如 "拉取 XX 动态失败：HTTP 503"）
+      detail      TEXT,                       -- 原始错误文本（如 RSSHub 错误页的 Error Message），截断存储
+      is_cookie   INTEGER NOT NULL DEFAULT 0, -- 疑似 B站 cookie 失效：错误文本命中 -101/账号未登录/SESSDATA/cookie 特征
+      occurred_at INTEGER NOT NULL,           -- 发生时间，Unix 秒
+      resolved_at INTEGER                  -- 恢复时间，Unix 秒；NULL=未恢复
+    );
+    -- 未恢复集合（主页通知计数）与异常页时间倒序列表共用
+    CREATE INDEX IF NOT EXISTS idx_events_open ON events(resolved_at, occurred_at DESC);
   `);
   migrateFromJsonFiles(db);
   migrateFromItemsTable(db);
@@ -429,6 +473,23 @@ export async function loadOcrTexts(postId: string): Promise<string[]> {
   return texts;
 }
 
+/** OCR 记录展示视图：识别状态 + 文本（展示层按动态图片列表组装每条动态的 OCR 情况） */
+export interface OcrRecordView {
+  status: 'ok' | 'failed';
+  text: string;
+}
+
+/**
+ * 读取全部 OCR 记录（按规范化图片 URL 索引），供展示层组装每条动态的 OCR 文本与识别状态。
+ * 一次读取全表：当前量级（数百条）下优于按动态逐条查询；数据增长后可按需改分页。
+ */
+export async function loadOcrRecords(): Promise<Map<string, OcrRecordView>> {
+  const rows = db.prepare('SELECT image_url, status, text FROM ocr_records').all() as unknown as {
+    image_url: string; status: string; text: string;
+  }[];
+  return new Map(rows.map((r) => [r.image_url, { status: r.status as 'ok' | 'failed', text: r.text }]));
+}
+
 /** 读取最近拉取统计；从未拉取过返回 null */
 export async function loadMeta(): Promise<FetchMeta | null> {
   const row = db.prepare('SELECT value FROM meta WHERE id = 1').get() as { value: string } | undefined;
@@ -438,6 +499,121 @@ export async function loadMeta(): Promise<FetchMeta | null> {
 /** 写入本次拉取统计 */
 export async function saveMeta(meta: FetchMeta): Promise<void> {
   db.prepare('INSERT OR REPLACE INTO meta (id, value) VALUES (1, ?)').run(JSON.stringify(meta));
+}
+
+// ==================== 源健康事件（Web 异常页 / 主页通知） ====================
+
+/**
+ * 记录一条源健康事件（拉取层异常）。摘要与详情超长自动截断（与列注释语义一致）。
+ */
+export async function recordEvent(e: {
+  gameId?: string;
+  kind: EventKind;
+  summary: string;
+  detail?: string;
+  isCookieSuspect?: boolean;
+}): Promise<void> {
+  db.prepare(`
+    INSERT INTO events (game_id, kind, summary, detail, is_cookie, occurred_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    e.gameId ?? null,
+    e.kind,
+    e.summary.slice(0, 200),
+    e.detail?.slice(0, 500) ?? null,
+    e.isCookieSuspect ? 1 : 0,
+    Math.floor(Date.now() / 1000),
+  );
+}
+
+/** 该游戏全部未恢复事件标记恢复（本轮拉取成功且有数据时调用）；返回恢复条数 */
+export async function resolveEventsForGame(gameId: string): Promise<number> {
+  const r = db
+    .prepare('UPDATE events SET resolved_at = ? WHERE game_id = ? AND resolved_at IS NULL')
+    .run(Math.floor(Date.now() / 1000), gameId);
+  return Number(r.changes);
+}
+
+/** 未恢复事件计数（主页通知区域：有未恢复异常则显示警告并链接到异常页） */
+export async function countUnresolvedEvents(): Promise<UnresolvedEventCount> {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS total, COALESCE(SUM(is_cookie), 0) AS cookie
+    FROM events WHERE resolved_at IS NULL
+  `).get() as { total: number; cookie: number };
+  return { total: row.total, cookieSuspect: Number(row.cookie) };
+}
+
+/** events 表行 */
+interface EventRow {
+  id: number;
+  game_id: string | null;
+  kind: string;
+  summary: string;
+  detail: string | null;
+  is_cookie: number;
+  occurred_at: number;
+  resolved_at: number | null;
+}
+
+/** 行 → StoredEvent */
+function rowToEvent(r: EventRow): StoredEvent {
+  return {
+    id: r.id,
+    gameId: r.game_id,
+    kind: r.kind as EventKind,
+    summary: r.summary,
+    detail: r.detail,
+    isCookieSuspect: r.is_cookie === 1,
+    occurredAt: r.occurred_at,
+    resolvedAt: r.resolved_at,
+  };
+}
+
+/** 异常页列表：按发生时间倒序（含已恢复） */
+export async function listEvents(limit = 200): Promise<StoredEvent[]> {
+  const rows = db.prepare(`
+    SELECT * FROM events ORDER BY occurred_at DESC, id DESC LIMIT ?
+  `).all(limit) as unknown as EventRow[];
+  return rows.map(rowToEvent);
+}
+
+/**
+ * 最近一条未恢复事件（主页异常报告区取"最近异常时间"）；无未恢复事件返回 null。
+ * 时间口径取 occurred_at（异常发生时间），与计数口径一致（resolved_at IS NULL）。
+ */
+export async function latestUnresolvedEvent(): Promise<StoredEvent | null> {
+  const row = db.prepare(`
+    SELECT * FROM events WHERE resolved_at IS NULL ORDER BY occurred_at DESC, id DESC LIMIT 1
+  `).get() as unknown as EventRow | undefined;
+  return row ? rowToEvent(row) : null;
+}
+
+/**
+ * 待结构化动态数：从未处理（extracted_at 为 NULL）或处理后内容又更新（extracted_at < updated_at）。
+ * 不计尝试次数上限（含已被放弃的动态），语义为"尚未产出结构化结果的动态"，供概览卡片展示。
+ */
+export async function countPendingExtract(): Promise<number> {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS n FROM posts WHERE extracted_at IS NULL OR extracted_at < updated_at
+  `).get() as { n: number };
+  return Number(row.n);
+}
+
+/**
+ * 尚未成功识别的图片数：按去重图片 URL 统计，不存在 status='ok' 记录的即计入
+ * （含从未尝试与尝试失败待重试的），供概览卡片展示"待 OCR 图片"。
+ */
+export async function countUnrecognizedImages(): Promise<number> {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS n FROM (
+      SELECT j.value AS image_url
+      FROM posts p, json_each(p.images) j
+      LEFT JOIN ocr_records o ON o.image_url = j.value AND o.status = 'ok'
+      GROUP BY j.value
+      HAVING COUNT(o.image_url) = 0
+    )
+  `).get() as { n: number };
+  return Number(row.n);
 }
 
 // ==================== LLM 结构化（v1.5） ====================
