@@ -15,10 +15,11 @@ ocr-service/.venv/
 npm-debug.log*
 pnpm-debug.log*
 
-# 环境变量与密钥（禁止提交任何凭证）
+# 环境变量与密钥（禁止提交任何凭证）；模板文件除外
 .env
 .env.*
 *.env
+!.env.example
 
 # 调研探针目录内的依赖（保留探针源码与原始数据，忽略其依赖）
 _research/rssworker_probe/node_modules/

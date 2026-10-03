@@ -101,7 +101,7 @@ function openDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS ocr_records (
       image_url  TEXT PRIMARY KEY,      -- 图片 URL（经 normalizeImageUrl 规范化：统一协议与 CDN 主机号），幂等键
       post_id    TEXT NOT NULL,         -- 首次发现该图片的动态 id（posts.id）
-      text       TEXT NOT NULL,         -- OCR 识别文本（客户端已过滤噪声行，按 \n 合并）；失败时为空串
+      text       TEXT NOT NULL,         -- OCR 识别文本（客户端已过滤噪声行，多行合并为一段）；失败时为空串
       created_at INTEGER NOT NULL,      -- 首次尝试时间，Unix 秒
       status     TEXT NOT NULL DEFAULT 'ok', -- 当前状态：ok=识别成功 / failed=识别失败待重试
       attempts   INTEGER NOT NULL DEFAULT 0, -- 累计尝试次数（成功后不再累加）
