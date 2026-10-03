@@ -5,20 +5,66 @@ import { extractEntries } from './processing/extract.js';
 import { GAMES } from './core/games.js';
 import { envNum } from './core/env.js';
 import { moduleLogger } from './core/logger.js';
+import { CronJob } from 'cron';
 
 const log = moduleLogger('scheduler');
 
 /**
  * 定时调度（两条独立循环，共享重入互斥）：
- * - 拉取循环：RSS 拉取 → 入库 → 顺带跑一轮处理链。默认每天北京时间 00:00 一次；
- *   设置 FETCH_INTERVAL_MINUTES（分钟，最小 1）后改为固定间隔模式。
- * - 处理循环：OCR + LLM 结构化，独立于拉取高频跑清积压（PROCESS_INTERVAL_MINUTES，
- *   默认 30，最小 5），避免"每日一批限 20 张/10 条"导致数据滞后数天。
+ * - 拉取循环：RSS 拉取 → 入库 → 顺带执行一轮处理链。
+ * - 处理循环：OCR + LLM 结构化，独立于拉取高频执行清积压。
  *
- * 启动时立即执行一次拉取循环，保证库存非空；上一轮未完成时新 tick 直接跳过，
- * 防止 OCR/LLM 慢批次期间两轮并发重复处理同一批数据。
+ * 触发方式（优先级从高到低）：
+ * 1. cron 表达式：FETCH_CRON / PROCESS_CRON，标准 5 字段（分 时 日 月 周），固定按北京时间解释；
+ * 2. 固定间隔：FETCH_INTERVAL_MINUTES / PROCESS_INTERVAL_MINUTES（分钟）；
+ * 3. 拉取循环未配置任何项时：每天北京时间 00:00。
+ * cron 表达式非法时打 error 日志并回落到下一级方式，不中断服务。
+ *
+ * 上一轮未完成时新触发的轮次直接跳过，防止慢批次期间两轮并发重复处理同一批数据。
  * Web 服务只读本地存储，不实时拉取。
  */
+
+/** cron 固定解释时区：项目约定时间一律 Asia/Shanghai，部署到任意时区机器行为一致 */
+const CRON_TZ = 'Asia/Shanghai';
+
+/** 调度触发方式：cron=表达式 / interval=固定间隔 / daily=拉取循环专属的每天 0 点 */
+type Schedule =
+  | { type: 'cron'; expr: string }
+  | { type: 'interval'; ms: number }
+  | { type: 'daily' };
+
+/**
+ * 构造 cron 调度；表达式非法时返回 null（调用方回落默认方式）。
+ * 错误信息明确打印，避免"配置了 cron 却静默未生效"。
+ */
+function buildCronSchedule(expr: string | undefined, label: string): Schedule | null {
+  const trimmed = expr?.trim();
+  if (!trimmed) return null;
+  try {
+    // 构造即校验表达式；此处不启动，start() 在统一位置调用
+    CronJob.from({ cronTime: trimmed, onTick: () => {}, timeZone: CRON_TZ });
+    return { type: 'cron', expr: trimmed };
+  } catch (e) {
+    log.error('%s cron 表达式非法 expr=%s err=%s，将回落默认调度方式', label, trimmed, (e as Error).message);
+    return null;
+  }
+}
+
+/** 拉取循环调度：FETCH_CRON → FETCH_INTERVAL_MINUTES → 每天北京时间 00:00 */
+function fetchSchedule(): Schedule {
+  return (
+    buildCronSchedule(process.env.FETCH_CRON, '拉取循环') ??
+    (fixedIntervalMs() !== null ? { type: 'interval', ms: fixedIntervalMs() as number } : { type: 'daily' })
+  );
+}
+
+/** 处理循环调度：PROCESS_CRON → PROCESS_INTERVAL_MINUTES（默认 30，最小 5） */
+function processSchedule(): Schedule {
+  return (
+    buildCronSchedule(process.env.PROCESS_CRON, '处理循环') ??
+    { type: 'interval', ms: processIntervalMs() }
+  );
+}
 
 /** 北京时间相对 UTC 的偏移毫秒（固定 +8，无夏令时） */
 const CST_OFFSET_MS = 8 * 3600_000;
@@ -99,15 +145,48 @@ function guarded(label: string, fn: () => Promise<void>): void {
     });
 }
 
-/** 启动定时循环（不阻塞调用方）：拉取先立即执行一次，再按模式排程；处理链独立高频循环 */
-export function startScheduler(): void {
-  const ms = fixedIntervalMs();
-  if (ms === null) {
-    log.info('定时拉取已启动 mode=daily-at-00:00 cst');
-  } else {
-    log.info('定时拉取已启动 mode=interval minutes=%d', Math.round(ms / 60_000));
+/** 调度方式的可读描述（启动日志用，便于确认实际生效方式） */
+function describeSchedule(s: Schedule): string {
+  switch (s.type) {
+    case 'cron': return `cron expr="${s.expr}" tz=${CRON_TZ}`;
+    case 'interval': return `interval minutes=${Math.round(s.ms / 60_000)}`;
+    case 'daily': return 'daily-at-00:00 cst';
   }
-  log.info('处理链循环已启动 intervalMinutes=%d', Math.round(processIntervalMs() / 60_000));
+}
+
+/** 按调度方式安装一个定时器；daily 模式用自递归 setTimeout 锚定北京时间 0 点 */
+function installTimer(s: Schedule, tick: () => void): void {
+  switch (s.type) {
+    case 'cron':
+      CronJob.from({
+        cronTime: s.expr,
+        onTick: tick,
+        timeZone: CRON_TZ,
+        start: true,
+      });
+      break;
+    case 'interval':
+      setInterval(tick, s.ms);
+      break;
+    case 'daily':
+      // 触发后重新计算到下一个 0 点，避免漂移
+      const loop = (): void => {
+        setTimeout(() => {
+          tick();
+          loop();
+        }, msUntilMidnight());
+      };
+      loop();
+      break;
+  }
+}
+
+/** 启动定时循环（不阻塞调用方）：拉取先立即执行一次；处理链启动即尝试（与拉取首轮互斥） */
+export function startScheduler(): void {
+  const fs = fetchSchedule();
+  const ps = processSchedule();
+  log.info('定时拉取已启动 %s', describeSchedule(fs));
+  log.info('处理链循环已启动 %s', describeSchedule(ps));
 
   const fetchTick = (): void =>
     guarded('拉取批次', async () => {
@@ -119,20 +198,9 @@ export function startScheduler(): void {
     });
 
   fetchTick();
+  installTimer(fs, fetchTick);
 
-  if (ms === null) {
-    // 每天 0 点模式：触发后重新计算到下一个 0 点，避免漂移
-    const loop = (): void => {
-      setTimeout(() => {
-        fetchTick();
-        loop();
-      }, msUntilMidnight());
-    };
-    loop();
-  } else {
-    setInterval(fetchTick, ms);
-  }
-  // 处理链循环：启动即跑一次（与拉取首轮互斥，谁先抢到谁跑），之后固定间隔清积压
+  // 启动即尝试一次（与拉取首轮互斥，谁先抢到谁执行）
   processTick();
-  setInterval(processTick, processIntervalMs());
+  installTimer(ps, processTick);
 }
