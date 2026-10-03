@@ -91,7 +91,11 @@ function openDb(): DatabaseSync {
       first_seen_at INTEGER NOT NULL,   -- 首次入库时间，Unix 秒（拉取覆盖时保留）
       updated_at    INTEGER NOT NULL,   -- 内容最近一次变化时间，Unix 秒；内容未变不刷新（下游幂等依据）
       extracted_at  INTEGER,            -- LLM 结构化完成时间，Unix 秒；NULL=未处理（含预过滤跳过也写入）
-      extract_attempts INTEGER NOT NULL DEFAULT 0 -- LLM 结构化累计尝试次数（失败重试用）
+      extract_attempts INTEGER NOT NULL DEFAULT 0, -- LLM 结构化累计尝试次数（仅内容类失败累加，见 markExtractFailure）
+      extract_last_error TEXT,          -- 最近一次结构化失败原因（infra/内容失败都记录）
+      extract_last_attempted_at INTEGER -- 最近一次结构化尝试时间，Unix 秒；重试冷却依据（NULL=从未尝试）
+      -- 注意：拉取层覆盖走 INSERT OR REPLACE，未列出的上述状态列会被重置——
+      -- 即"内容变化"时 extracted_at/extract_attempts 自动归零重新入队（隐式语义，勿给这些列加默认值）
     );
     -- 展示层按游戏分组倒序取数
     CREATE INDEX IF NOT EXISTS idx_posts_game ON posts(game_id, published_at DESC);
@@ -104,8 +108,9 @@ function openDb(): DatabaseSync {
       text       TEXT NOT NULL,         -- OCR 识别文本（客户端已过滤噪声行，多行合并为一段）；失败时为空串
       created_at INTEGER NOT NULL,      -- 首次尝试时间，Unix 秒
       status     TEXT NOT NULL DEFAULT 'ok', -- 当前状态：ok=识别成功 / failed=识别失败待重试
-      attempts   INTEGER NOT NULL DEFAULT 0, -- 累计尝试次数（成功后不再累加）
-      last_error TEXT                      -- 最近一次失败原因；成功后清空
+      attempts   INTEGER NOT NULL DEFAULT 0, -- 累计尝试次数（仅内容类失败累加；基础设施失败不计数，见 saveOcrFailure）
+      last_error TEXT,                       -- 最近一次失败原因；成功后清空
+      last_attempted_at INTEGER             -- 最近一次尝试时间，Unix 秒；重试冷却依据（NULL=从未尝试）
     );
     CREATE INDEX IF NOT EXISTS idx_ocr_post ON ocr_records(post_id);
 
@@ -130,6 +135,8 @@ function openDb(): DatabaseSync {
     );
     -- 判定层核心查询：按游戏+大类+结束时间筛"即将到期"的条目
     CREATE INDEX IF NOT EXISTS idx_entries_game ON entries(game_id, type, end_at);
+    -- replaceEntriesForPost 按 post_id 全删，避免全表扫描
+    CREATE INDEX IF NOT EXISTS idx_entries_post ON entries(post_id);
 
     -- 拉取批次统计（单行表：id 恒为 1）
     CREATE TABLE IF NOT EXISTS meta (
@@ -162,7 +169,8 @@ function migrateOcrRecords(db: DatabaseSync): void {
   const added =
     Number(ensureColumn(db, 'ocr_records', 'status', "status TEXT NOT NULL DEFAULT 'ok'")) +
     Number(ensureColumn(db, 'ocr_records', 'attempts', 'attempts INTEGER NOT NULL DEFAULT 0')) +
-    Number(ensureColumn(db, 'ocr_records', 'last_error', 'last_error TEXT'));
+    Number(ensureColumn(db, 'ocr_records', 'last_error', 'last_error TEXT')) +
+    Number(ensureColumn(db, 'ocr_records', 'last_attempted_at', 'last_attempted_at INTEGER'));
   if (added > 0) log.info('ocr_records 已补状态列 count=%d', added);
 
   // 旧格式键 = 带协议主机号的完整 URL；规范化后键固定为 https://i0.hdslb.com/...，检测需排除之
@@ -209,7 +217,9 @@ function migrateOcrRecords(db: DatabaseSync): void {
 function migratePostsExtract(db: DatabaseSync): void {
   const added =
     Number(ensureColumn(db, 'posts', 'extracted_at', 'extracted_at INTEGER')) +
-    Number(ensureColumn(db, 'posts', 'extract_attempts', 'extract_attempts INTEGER NOT NULL DEFAULT 0'));
+    Number(ensureColumn(db, 'posts', 'extract_attempts', 'extract_attempts INTEGER NOT NULL DEFAULT 0')) +
+    Number(ensureColumn(db, 'posts', 'extract_last_error', 'extract_last_error TEXT')) +
+    Number(ensureColumn(db, 'posts', 'extract_last_attempted_at', 'extract_last_attempted_at INTEGER'));
   if (added > 0) log.info('posts 已补 LLM 处理状态列 count=%d', added);
 }
 
@@ -355,39 +365,54 @@ export async function upsertPosts(posts: Item[]): Promise<{ added: number; updat
 }
 
 /**
- * 列出待识别图片（按动态发布时间倒序）：
- * 无记录 → 待识别；failed 且 attempts < maxAttempts → 重试；failed 达上限 → 放弃（死图）。
+ * 列出待识别图片（按动态发布时间倒序），同一图片只出现一次（同图被多条动态引用时）：
+ * - 无记录 → 待识别；
+ * - failed 且 attempts < maxAttempts 且已过冷却 → 重试；attempts 达上限 → 放弃（死图）；
+ * - 冷却：last_attempted_at 距今不足 cooldownSeconds 的跳过（cooldownSeconds=0 等价于不冷却）。
  */
-export async function listUnrecognizedImages(maxAttempts: number): Promise<PendingImage[]> {
+export async function listUnrecognizedImages(maxAttempts: number, cooldownSeconds = 0): Promise<PendingImage[]> {
   const rows = db.prepare(`
-    SELECT p.id AS postId, j.value AS imageUrl
+    SELECT j.value AS imageUrl, MIN(p.id) AS postId
     FROM posts p, json_each(p.images) j
     LEFT JOIN ocr_records o ON o.image_url = j.value
-    WHERE o.image_url IS NULL OR (o.status = 'failed' AND o.attempts < ?)
-    ORDER BY p.published_at DESC
-  `).all(maxAttempts) as unknown as PendingImage[];
+    WHERE o.image_url IS NULL
+       OR (o.status = 'failed' AND o.attempts < ?
+           AND (o.last_attempted_at IS NULL OR o.last_attempted_at <= ?))
+    GROUP BY j.value
+    ORDER BY MAX(p.published_at) DESC
+  `).all(maxAttempts, Math.floor(Date.now() / 1000) - cooldownSeconds) as unknown as PendingImage[];
   return rows;
 }
 
 /** 记录一次识别成功；同图已有失败记录时转正，attempts 保留历史 */
 export async function saveOcrRecord(imageUrl: string, postId: string, text: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
   db.prepare(`
-    INSERT INTO ocr_records (image_url, post_id, text, created_at, status, attempts, last_error)
-    VALUES (?, ?, ?, ?, 'ok', 1, NULL)
-    ON CONFLICT(image_url) DO UPDATE SET status = 'ok', text = excluded.text, last_error = NULL
-  `).run(normalizeImageUrl(imageUrl), postId, text, Math.floor(Date.now() / 1000));
+    INSERT INTO ocr_records (image_url, post_id, text, created_at, status, attempts, last_error, last_attempted_at)
+    VALUES (?, ?, ?, ?, 'ok', 1, NULL, ?)
+    ON CONFLICT(image_url) DO UPDATE SET
+      status = 'ok', text = excluded.text, last_error = NULL, last_attempted_at = excluded.last_attempted_at
+  `).run(normalizeImageUrl(imageUrl), postId, text, now, now);
 }
 
-/** 记录一次识别失败；attempts 累加，达到调用方设定的上限后不再进入待识别队列 */
-export async function saveOcrFailure(imageUrl: string, postId: string, error: string): Promise<void> {
+/**
+ * 记录一次识别失败。
+ * - 内容类失败（infra=false）：attempts 累加，达到调用方设定的上限后不再进入待识别队列；
+ * - 基础设施失败（infra=true，如服务未启动/超时）：attempts 不累加，只记错误与尝试时间，
+ *   防止 OCR 侧车宕机期间把全部图片的重试额度烧光。
+ */
+export async function saveOcrFailure(imageUrl: string, postId: string, error: string, infra = false): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const inc = infra ? 0 : 1;
   db.prepare(`
-    INSERT INTO ocr_records (image_url, post_id, text, created_at, status, attempts, last_error)
-    VALUES (?, ?, '', ?, 'failed', 1, ?)
+    INSERT INTO ocr_records (image_url, post_id, text, created_at, status, attempts, last_error, last_attempted_at)
+    VALUES (?, ?, '', ?, 'failed', ?, ?, ?)
     ON CONFLICT(image_url) DO UPDATE SET
       status = 'failed',
-      attempts = attempts + 1,
-      last_error = excluded.last_error
-  `).run(normalizeImageUrl(imageUrl), postId, Math.floor(Date.now() / 1000), error.slice(0, 500));
+      attempts = attempts + ?,
+      last_error = excluded.last_error,
+      last_attempted_at = excluded.last_attempted_at
+  `).run(normalizeImageUrl(imageUrl), postId, now, inc, error.slice(0, 500), now, inc);
 }
 
 /** 读取某动态全部图片的 OCR 文本（按 posts.images 顺序；仅取识别成功的记录） */
@@ -463,15 +488,19 @@ function rowToEntry(row: EntryRow): StoredEntry {
 
 /**
  * 列出待 LLM 结构化的动态：
- * 从未处理（extracted_at 为 NULL）或处理后内容又更新（extracted_at < updated_at），
- * 且尝试次数未达上限。
+ * - 从未处理（extracted_at 为 NULL）或处理后内容又更新（extracted_at < updated_at），
+ *   且尝试次数未达上限（仅内容类失败累加）；
+ * - 冷却：extract_last_attempted_at 距今不足 cooldownSeconds 的跳过（0 等价于不冷却），
+ *   避免 LLM 服务故障期间按调度间隔反复硬冲。
  */
-export async function listPostsToExtract(maxAttempts: number): Promise<StoredPost[]> {
+export async function listPostsToExtract(maxAttempts: number, cooldownSeconds = 0): Promise<StoredPost[]> {
   const rows = db.prepare(`
     SELECT * FROM posts
-    WHERE (extracted_at IS NULL OR extracted_at < updated_at) AND extract_attempts < ?
+    WHERE (extracted_at IS NULL OR extracted_at < updated_at)
+      AND extract_attempts < ?
+      AND (extract_last_attempted_at IS NULL OR extract_last_attempted_at <= ?)
     ORDER BY published_at DESC
-  `).all(maxAttempts) as unknown as PostRow[];
+  `).all(maxAttempts, Math.floor(Date.now() / 1000) - cooldownSeconds) as unknown as PostRow[];
   return rows.map(rowToPost);
 }
 
@@ -480,9 +509,20 @@ export async function markExtracted(postId: string): Promise<void> {
   db.prepare('UPDATE posts SET extracted_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), postId);
 }
 
-/** 记一次结构化失败（attempts 累加，达上限后由查询条件自动放弃） */
-export async function markExtractFailure(postId: string): Promise<void> {
-  db.prepare('UPDATE posts SET extract_attempts = extract_attempts + 1 WHERE id = ?').run(postId);
+/**
+ * 记一次结构化失败：
+ * - 内容类失败（infra=false）attempts 累加，达上限后由查询条件自动放弃；
+ * - 基础设施失败（infra=true，如网络/超时/限流/鉴权）attempts 不累加，防服务故障烧光重试额度。
+ * 两种失败均记录原因（extract_last_error）与尝试时间（冷却用）。
+ */
+export async function markExtractFailure(postId: string, error: string, infra = false): Promise<void> {
+  db.prepare(`
+    UPDATE posts SET
+      extract_attempts = extract_attempts + ?,
+      extract_last_error = ?,
+      extract_last_attempted_at = ?
+    WHERE id = ?
+  `).run(infra ? 0 : 1, error.slice(0, 500), Math.floor(Date.now() / 1000), postId);
 }
 
 /**

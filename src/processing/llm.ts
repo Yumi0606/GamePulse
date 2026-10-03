@@ -10,22 +10,26 @@ const log = moduleLogger('llm');
  *
  * 约定：要求模型输出 JSON（response_format=json_object + prompt 双保险），
  * 调用方自行做结构校验——不同厂商对 response_format 的支持度不一，不能只依赖参数。
+ *
+ * 错误分类（供 extract 决定是否消耗重试次数）：
+ * - LlmInfraError：网络/超时/鉴权/限流/服务端故障 → 临时或配置问题，不烧 attempts；
+ * - 普通错误：HTTP 400（请求本身非法）、模型输出缺 content 或非法 JSON → 与该动态相关，烧 attempts。
  */
 
-const BASE_URL = envStr('LLM_BASE_URL');
-const API_KEY = envStr('LLM_API_KEY');
-const MODEL = envStr('LLM_MODEL');
-const TIMEOUT_MS = envNum('LLM_TIMEOUT_MS', 120_000);
+/** LLM 基础设施错误：重试不计入内容失败次数 */
+export class LlmInfraError extends Error {}
 
-/** LLM 是否已配置可用（BASE_URL + MODEL 都需要） */
+/** LLM 是否已配置可用（BASE_URL + MODEL 都需要）；惰性读取，保证 .env 加载后判断生效 */
 export function llmEnabled(): boolean {
-  return BASE_URL !== '' && MODEL !== '';
+  return envStr('LLM_BASE_URL') !== '' && envStr('LLM_MODEL') !== '';
 }
 
 /** 返回脱敏的当前配置描述（日志用）；未配置时返回提示文案 */
 export function llmConfig(): string {
   if (!llmEnabled()) return '(未配置)';
-  return `${MODEL} @ ${BASE_URL}${API_KEY ? '' : '（无 key，仅支持本地无需鉴权的服务）'}`;
+  const baseUrl = envStr('LLM_BASE_URL');
+  const apiKey = envStr('LLM_API_KEY');
+  return `${envStr('LLM_MODEL')} @ ${baseUrl}${apiKey ? '' : '（无 key，仅支持本地无需鉴权的服务）'}`;
 }
 
 export interface ChatOptions {
@@ -39,22 +43,26 @@ export interface ChatOptions {
 
 /** 发起一次 chat 补全并解析为 JSON；任何异常（网络/非 2xx/JSON 解析失败）抛错由调用方处理 */
 export async function chatJSON(opts: ChatOptions): Promise<unknown> {
-  if (!llmEnabled()) throw new Error('LLM 未配置（LLM_BASE_URL / LLM_MODEL）');
+  const baseUrl = envStr('LLM_BASE_URL');
+  const apiKey = envStr('LLM_API_KEY');
+  const model = envStr('LLM_MODEL');
+  const timeoutMs = envNum('LLM_TIMEOUT_MS', 120_000);
+  if (baseUrl === '' || model === '') throw new LlmInfraError('LLM 未配置（LLM_BASE_URL / LLM_MODEL）');
 
   const t0 = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(`${BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         // Ollama 等本地服务不校验 key，占位值避免缺 header 报错
-        Authorization: `Bearer ${API_KEY || 'none'}`,
+        Authorization: `Bearer ${apiKey || 'none'}`,
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         messages: [
           { role: 'system', content: opts.system },
           { role: 'user', content: opts.user },
@@ -67,7 +75,12 @@ export async function chatJSON(opts: ChatOptions): Promise<unknown> {
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`LLM HTTP ${res.status}: ${body.slice(0, 200)}`);
+      // 鉴权/限流/服务端故障/请求超时均属临时或配置问题 → infra；
+      // 400 通常是请求本身非法（如上下文超长），重试无意义 → 内容类
+      if (res.status === 400) {
+        throw new Error(`LLM HTTP 400: ${body.slice(0, 200)}`);
+      }
+      throw new LlmInfraError(`LLM HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
 
     const data = (await res.json()) as {
@@ -83,6 +96,12 @@ export async function chatJSON(opts: ChatOptions): Promise<unknown> {
       Date.now() - t0,
     );
     return JSON.parse(content);
+  } catch (e) {
+    // fetch 网络错误/超时（AbortError）也归为 infra
+    if (e instanceof LlmInfraError || e instanceof TypeError || (e as Error).name === 'AbortError') {
+      throw e instanceof LlmInfraError ? e : new LlmInfraError(`LLM 请求失败：${(e as Error).message}`);
+    }
+    throw e; // JSON.parse 失败等保持普通 Error（内容类）
   } finally {
     clearTimeout(timer);
   }

@@ -1,12 +1,17 @@
+// 必须最先 import：加载 .env，保证后续 logger/ocr/llm 等模块读到配置
+import './core/env.js';
 import { runFetchOnce } from './scheduler.js';
 import { loadPosts } from './storage/store.js';
 import { GAMES } from './core/games.js';
+import { fmtCst } from './processing/extract.js';
+import { installFatalHandlers } from './core/logger.js';
 
 /**
  * 命令行入口：手动跑一次拉取并落盘（与定时任务同一逻辑），然后打印库存摘要。
  * 定时刷新由 Web 服务内置的调度器负责，本入口用于验证与补拉。
  */
 async function main(): Promise<void> {
+  installFatalHandlers();
   console.log('手动拉取 %d 款游戏官号动态…', GAMES.length);
   const meta = await runFetchOnce();
 
@@ -40,7 +45,8 @@ async function main(): Promise<void> {
       .slice(0, 2);
     console.log('\n【%s】', game.name);
     for (const it of gameItems) {
-      const date = new Date(it.publishedAt * 1000).toISOString().slice(0, 16).replace('T', ' ');
+      // 北京时间展示（toISOString 是 UTC，会偏 8 小时）
+      const date = fmtCst(it.publishedAt);
       const tag = it.images ? `（${it.images.length} 图）` : '';
       console.log('  %s  %s%s', date, it.title.slice(0, 50), tag);
     }

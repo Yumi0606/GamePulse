@@ -1,7 +1,9 @@
+// 必须最先 import：加载 .env，保证后续 logger/ocr/llm 等模块读到配置
+import '../core/env.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { GAMES } from '../core/games.js';
 import { startScheduler } from '../scheduler.js';
-import { moduleLogger } from '../core/logger.js';
+import { installFatalHandlers, moduleLogger } from '../core/logger.js';
 import { loadPosts, loadEntries, loadMeta } from '../storage/store.js';
 import { buildGameRss, buildAggregatedRss, buildEntriesRss } from './rss.js';
 import { renderPage, renderCalendar, parseMonth } from './page.js';
@@ -95,6 +97,7 @@ function notFound(res: ServerResponse, text: string): void {
 }
 
 server.listen(PORT, () => {
+  installFatalHandlers(); // 常驻服务进程级兜底：漏 catch 的 Promise 拒绝不再静默杀进程
   log.info('Web 服务已启动 port=%d', PORT);
   log.info('页面: GET / 列表视图 | GET /calendar?month=YYYY-MM 日历视图');
   log.info('RSS: /rss/posts 原始动态 | /rss/entries 结构化条目（均可追加 /<gameId>）');

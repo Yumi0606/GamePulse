@@ -1,6 +1,6 @@
 import type { Entry, EntryPayload, EntryType } from '../core/types.js';
 import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type StoredPost } from '../storage/store.js';
-import { chatJSON, llmConfig, llmEnabled } from './llm.js';
+import { chatJSON, llmConfig, llmEnabled, LlmInfraError } from './llm.js';
 import { GAMES } from '../core/games.js';
 import { envNum, envStr } from '../core/env.js';
 import { moduleLogger } from '../core/logger.js';
@@ -23,6 +23,10 @@ const log = moduleLogger('extract');
 const BATCH_LIMIT = () => envNum('LLM_BATCH_LIMIT', 10);
 /** 单条动态最大尝试次数 */
 const MAX_ATTEMPTS = () => envNum('EXTRACT_MAX_ATTEMPTS', 3);
+/** 失败重试冷却（秒）：刚失败过的动态在冷却期内不再尝试（默认 300s，0=不冷却） */
+const RETRY_COOLDOWN = () => envNum('LLM_RETRY_COOLDOWN', 300);
+/** 连续基础设施失败达该次数即熔断本批剩余（服务大概率不可用） */
+const INFRA_BREAK_STREAK = 3;
 /** 产出源标识（写入 entries.source） */
 const SOURCE = 'llm-bilibili';
 
@@ -129,7 +133,8 @@ function toUnix(iso: string | undefined): number | undefined {
 /** 北京时间格式化（sv-SE locale 输出 ISO 样式，供 LLM 上下文与时间推算参照） */
 const CST_DT = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const CST_D = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' });
-const fmtCst = (unix: number): string => CST_DT.format(unix * 1000);
+/** 北京时间格式化（sv-SE locale 输出 ISO 样式，供 LLM 上下文与时间推算参照；亦供展示层复用） */
+export const fmtCst = (unix: number): string => CST_DT.format(unix * 1000);
 
 /** 短哈希（djb2，base36）：同一动态拆出的多条同类条目靠标题区分 id，避免撞键 */
 function hash36(s: string): string {
@@ -228,12 +233,13 @@ async function buildUserContent(post: StoredPost, gameName: string): Promise<str
  * 处理单条动态（批处理与单条测试共用的核心路径）：
  * 组装上下文 → 关键词预过滤 → LLM 拆分 → 规整 → （save=true 时）替换入库并标记。
  * save=false 为 dry-run：只算不写，不消耗幂等状态，可反复测试。
+ * failed 时带 infra 标记（基础设施失败，供熔断判定）。
  */
 async function processPost(
   post: StoredPost,
   gameNames: Record<string, string>,
   save: boolean,
-): Promise<{ status: 'processed' | 'skipped' | 'failed'; entries: Entry[]; user: string | null }> {
+): Promise<{ status: 'processed' | 'skipped' | 'failed'; entries: Entry[]; user: string | null; infra?: boolean }> {
   const user = await buildUserContent(post, gameNames[post.gameId] ?? post.gameId);
   if (!user) {
     // 正文与 OCR 均为空，无从结构化：标记跳过避免反复进入队列
@@ -268,9 +274,10 @@ async function processPost(
     );
     return { status: 'processed', entries, user };
   } catch (e) {
-    if (save) await markExtractFailure(post.id);
-    log.error('结构化失败 postId=%s attempts将累加 err=%s', post.id, (e as Error).message);
-    return { status: 'failed', entries: [], user };
+    const isInfra = e instanceof LlmInfraError;
+    if (save) await markExtractFailure(post.id, (e as Error).message, isInfra);
+    log.error({ err: e }, isInfra ? '结构化基础设施失败(不计次数) postId=%s' : '结构化失败 postId=%s attempts将累加', post.id);
+    return { status: 'failed', entries: [], user, infra: isInfra };
   }
 }
 
@@ -280,36 +287,59 @@ export async function extractEntries(gameNames: Record<string, string>): Promise
   skipped: number;
   entries: number;
   failed: number;
+  aborted: boolean;
 }> {
   if (!llmEnabled()) {
     log.warn('LLM 未配置，结构化跳过（可在 .env 配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL）');
-    return { processed: 0, skipped: 0, entries: 0, failed: 0 };
+    return { processed: 0, skipped: 0, entries: 0, failed: 0, aborted: false };
   }
   log.info('LLM 结构化开始 model=%s', llmConfig());
 
-  const candidates = await listPostsToExtract(MAX_ATTEMPTS());
+  const cooldown = RETRY_COOLDOWN();
+  const candidates = await listPostsToExtract(MAX_ATTEMPTS(), cooldown);
   const pending = candidates.slice(0, BATCH_LIMIT());
   const t0 = Date.now();
-  log.info('待结构化动态 pending=%d batchLimit=%d maxAttempts=%d', candidates.length, BATCH_LIMIT(), MAX_ATTEMPTS());
+  log.info('待结构化动态 pending=%d batchLimit=%d maxAttempts=%d cooldown=%ds', candidates.length, BATCH_LIMIT(), MAX_ATTEMPTS(), cooldown);
 
   let processed = 0;
   let skipped = 0;
   let entryCount = 0;
   let failed = 0;
+  let infraStreak = 0;
+  let aborted = false;
 
   for (const post of pending) {
+    if (aborted) {
+      skipped++;
+      continue;
+    }
     const r = await processPost(post, gameNames, true);
-    if (r.status === 'processed') processed++;
-    else if (r.status === 'skipped') skipped++;
-    else failed++;
+    if (r.status === 'processed') {
+      processed++;
+      infraStreak = 0;
+    } else if (r.status === 'skipped') {
+      skipped++;
+    } else {
+      failed++;
+      // 基础设施连续失败（key 失效/网络不通）时熔断本批剩余，防白烧超时与 token
+      if (r.infra) {
+        infraStreak++;
+        if (infraStreak >= INFRA_BREAK_STREAK) {
+          log.warn('连续 %d 次基础设施失败，熔断本批剩余动态（下批自动重试），请检查 LLM 配置/服务', infraStreak);
+          aborted = true;
+        }
+      } else {
+        infraStreak = 0;
+      }
+    }
     entryCount += r.entries.length;
   }
 
   log.info(
-    'LLM 结构化完成 processed=%d skipped=%d entries=%d failed=%d costMs=%d',
-    processed, skipped, entryCount, failed, Date.now() - t0,
+    'LLM 结构化完成 processed=%d skipped=%d entries=%d failed=%d aborted=%s costMs=%d',
+    processed, skipped, entryCount, failed, aborted, Date.now() - t0,
   );
-  return { processed, skipped, entries: entryCount, failed };
+  return { processed, skipped, entries: entryCount, failed, aborted };
 }
 
 /**
