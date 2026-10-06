@@ -1,0 +1,36 @@
+/* 日历视图样式（仅 /calendar 加载；由 /assets/calendar.css 提供，见 server.ts 静态路由） */
+table.cal { border-collapse: collapse; width: 100%; table-layout: fixed; }
+table.cal th { padding: 4px 0; font-size: 12px; color: #888; border-bottom: 1px solid #ddd; }
+table.cal td { border: 1px solid #eee; vertical-align: top; height: 84px; padding: 2px 4px; font-size: 12px; }
+/* 持续条行：不占日期格高度、无边框，仅承载横跨色条 */
+table.cal tr.span-row td { height: auto; border: none; padding: 1px 2px 0; }
+/* 周末列（六、日）底色；今日强调置于其后，保证今日为周末时仍以今日样式为准 */
+td.wknd { background: #fbfaf6; }
+td.today { background: #fff3e0; box-shadow: inset 0 0 0 1px #f5712c; }
+td.pad { background: #fafafa; }
+.dnum { color: #888; font-size: 11px; }
+/* 落点事件（开始/结束/奖励截止）：可点击跳转列表视图对应条目 */
+.ev { display: block; border-radius: 3px; padding: 0 4px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* display:block 会覆盖 UA 的 [hidden]，需显式声明，供筛选与折叠隐藏 */
+.ev[hidden] { display: none; }
+.ev.start { background: #e5f0e2; color: #1d6f2c; }
+.ev.end { background: #fbe7e9; color: #b0233a; }
+.ev.reward { background: #fff1d6; color: #8a5a00; }
+/* 跨天持续条：默认色，按游戏在下方覆写 --bar-* 三变量 */
+.bar { display: block; border-radius: 3px; padding: 0 6px; background: var(--bar-bg, #e8eef7); color: var(--bar-fg, #33507a); border-left: 3px solid var(--bar-accent, #9db2cf); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* 按游戏区分配色，多活动并排时凭左侧色条区分归属 */
+tr.span-row[data-game="arknights"] .bar { --bar-bg: #eaf1fa; --bar-fg: #26456f; --bar-accent: #3f6fb5; }
+tr.span-row[data-game="endfield"] .bar { --bar-bg: #efedfb; --bar-fg: #4b3f9e; --bar-accent: #6a5acd; }
+tr.span-row[data-game="delta-force"] .bar { --bar-bg: #faf3e0; --bar-fg: #7a5a00; --bar-accent: #c9a227; }
+tr.span-row[data-game="wuthering-waves"] .bar { --bar-bg: #e6f6f2; --bar-fg: #1f6b5f; --bar-accent: #2f9e8f; }
+tr.span-row[data-game="azur-lane"] .bar { --bar-bg: #e8f2fa; --bar-fg: #1f5c85; --bar-accent: #4a90c2; }
+/* +N 按钮：重置 button 默认外观，保留键盘可达性 */
+.more { display: block; width: 100%; text-align: left; padding: 0; border: 0; background: none; color: #888; font-size: 11px; font-family: inherit; cursor: pointer; }
+.more:hover { color: #444; text-decoration: underline; }
+/* 键盘焦点可见 */
+.more:focus-visible, .ev:focus-visible, .bar:focus-visible { outline: 2px solid #f5712c; outline-offset: 1px; }
+.calnav { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; }
+.calnav .cur { font-size: 16px; font-weight: 600; }
+.calnav input[type="month"] { font-size: 13px; font-weight: normal; padding: 2px 4px; border: 1px solid #ccc; border-radius: 3px; margin-left: 6px; }
+.callegend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 4px 0 8px; font-size: 12px; color: #888; }
+.callegend .ev, .callegend .bar { display: inline-block; margin: 0; }

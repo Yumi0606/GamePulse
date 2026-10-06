@@ -75,7 +75,8 @@ function currentYm(): string {
 
 /** 页面共享样式 */
 const STYLE = `
-  body { font-family: system-ui, "Microsoft YaHei", sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; color: #222; }
+  /* 底部预留约半屏空白：目标行靠近文档末尾时，锚点滚动居中才不会被滚动上限截断 */
+  body { font-family: system-ui, "Microsoft YaHei", sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px calc(50vh + 80px); color: #222; }
   h1 { font-size: 20px; }
   h2 { font-size: 16px; border-left: 4px solid #f5712c; padding-left: 8px; margin-top: 28px; }
   h2 small { color: #888; font-weight: normal; }
@@ -94,21 +95,7 @@ const STYLE = `
   .phases { margin: 2px 0 0 0; padding-left: 18px; font-size: 13px; color: #555; }
   .reward { color: #8a5a00; font-size: 13px; }
   .desc { margin-top: 2px; color: #444; font-size: 13px; }
-  /* 日历视图 */
-  table.cal { border-collapse: collapse; width: 100%; table-layout: fixed; }
-  table.cal th { padding: 4px 0; font-size: 12px; color: #888; border-bottom: 1px solid #ddd; }
-  table.cal td { border: 1px solid #eee; vertical-align: top; height: 84px; padding: 2px 4px; font-size: 12px; }
-  td.today { background: #fff8ec; }
-  td.pad { background: #fafafa; }
-  .dnum { color: #888; font-size: 11px; }
-  .ev { border-radius: 3px; padding: 0 4px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .ev.start { background: #e5f0e2; color: #1d6f2c; }
-  .ev.end { background: #fbe7e9; color: #b0233a; }
-  .ev.reward { background: #fff1d6; color: #8a5a00; }
-  .ev.ongoing { background: #f0f0f0; color: #666; }
-  .more { color: #888; }
-  .calnav { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; }
-  .calnav .cur { font-size: 16px; font-weight: 600; }
+  /* 待锚定条目：列表与日历共用 */
   .unanchored { color: #666; font-size: 13px; }
   /* 源异常通知与异常页 */
   .alert { background: #fbe7e9; color: #b0233a; padding: 8px 12px; border-radius: 4px; }
@@ -134,16 +121,20 @@ const STYLE = `
   .filters select, .filters input { padding: 4px 6px; font-size: 13px; border: 1px solid #ccc; border-radius: 3px; }
   .filters input[type="search"] { width: 200px; }
   .filters button { padding: 4px 10px; font-size: 13px; border: 1px solid #ccc; border-radius: 3px; background: #fff; cursor: pointer; }
-  .count-line { font-size: 13px; color: #666; margin: 6px 0; }
   /* 行内详情：原地展开；标题行右上角固定单条 RSS 链接 */
   li.hidden { display: none; }
-  li[data-game] { position: relative; padding-right: 60px; }
-  .rss-link { position: absolute; top: 6px; right: 0; font-size: 12px; }
+  li[data-game] { position: relative; padding-right: 44px; transition: background-color 0.8s ease; }
+  /* 锚点跳转落点短暂高亮，便于确认跳到哪一行 */
+  li.flash { background-color: #fff3cd; }
+  .row-links { position: absolute; top: 6px; right: 0; font-size: 12px; }
+  .row-links a { margin-left: 6px; }
   details { margin-top: 4px; }
   summary { cursor: pointer; font-size: 12px; color: #1a5fb4; }
   .sub { font-size: 12px; color: #888; margin: 6px 0 2px; }
   ul.ocrs { margin: 2px 0; }
   ul.ocrs li { border-bottom: 1px dashed #eee; }
+  ul.provs { margin: 2px 0; }
+  ul.provs li { border-bottom: 1px dashed #eee; font-size: 12px; color: #666; }
   .ocr { margin-top: 2px; font-size: 12px; color: #444; white-space: pre-wrap; word-break: break-word; }
   /* 大类区块：可折叠（结构化数据 / 原始动态），summary 冒充标题 */
   details.section { margin-top: 26px; }
@@ -155,12 +146,16 @@ const STYLE = `
 function layout(active: 'list' | 'calendar' | 'health', body: string): string {
   const navItem = (href: string, label: string, key: 'list' | 'calendar' | 'health') =>
     `<a href="${href}"${active === key ? ' style="font-weight:600"' : ''}>${label}</a>`;
+  // 日历视图的样式与交互抽为静态资源（见 server.ts 的 /assets/* 路由），避免内联脚本膨胀
+  const assets = active === 'calendar'
+    ? '\n<link rel="stylesheet" href="/assets/calendar.css">\n<script src="/assets/calendar.js" defer></script>'
+    : '';
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>GamePulse · 游戏活动排期</title>
-<style>${STYLE}</style>
+<style>${STYLE}</style>${assets}
 </head>
 <body>
   <h1>GamePulse · 游戏活动排期</h1>
@@ -176,7 +171,7 @@ ${body}
 
 /** OCR 区块：按动态图片顺序列出每张图的识别状态与文本（未识别 / 失败 / 已识别） */
 function ocrBlock(images: string[] | undefined, ocr: Map<string, OcrRecordView>): string {
-  if (!images || images.length === 0) return '<p class="muted">该动态无图片，无 OCR 文本。</p>';
+  if (!images || images.length === 0) return '<p class="desc muted">该动态无图片，无 OCR 文本。</p>';
   const rows = images.map((url, i) => {
     const rec = ocr.get(url);
     const badge = !rec
@@ -193,7 +188,7 @@ function ocrBlock(images: string[] | undefined, ocr: Map<string, OcrRecordView>)
 /**
  * 结构化条目单行：时间 + 大类标签 + 标题 + 置信/预估标注 + 引用型时间。
  * 行上挂 data-* 供内联脚本筛选；标题行右上角固定单条 RSS 链接；
- * <details> 原地展开"数据详情"（来源动态的 OCR 文本）。
+ * <details> 原地展开"数据详情"（条目说明 + 分类/标签 + 条件性 LLM 证据 + 来源动态 + 其 OCR 文本）。
  */
 function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<string, OcrRecordView>): string {
   const fmt = (unix?: number): string => (unix ? fmtCst(unix) : '—');
@@ -204,9 +199,12 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
   const startRef = e.payload.startRef ? `（始：${escapeHtml(e.payload.startRef.refText)}）` : '';
   const endRef = e.payload.endRef ? `（${escapeHtml(e.payload.endRef.refText)}）` : '';
   const reward = e.payload.rewardEndAt ? `<div class="reward">奖励截止 ${fmtCst(e.payload.rewardEndAt)}</div>` : '';
-  // 活动说明：优先详情，缺失回退简述；此前仅进搜索文本未渲染，导致页面看不到描述
-  const descText = e.payload.description ?? e.payload.summary;
-  const desc = descText ? `<div class="desc">${escapeHtml(descText)}</div>` : '';
+  // 标题下方描述文本：LLM 简述（summary）
+  const summary = e.payload.summary;
+  const desc = summary ? `<div class="desc">${escapeHtml(summary)}</div>` : '';
+  // 标题 hover 提示：仅取详情（description）；无详情则不输出 title 属性
+  const hoverText = e.payload.description;
+  const titleAttr = hoverText ? ` title="${escapeHtml(hoverText)}"` : '';
   const phases = e.payload.phases?.length
     ? `<ul class="phases">${e.payload.phases.map((p) => {
         const pf = (u?: number) => (u ? fmtCst(u) : '—');
@@ -221,37 +219,79 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
   const dStart = e.startAt !== undefined ? fmtCstDate(e.startAt) : '';
   const dEnd = e.endAt !== undefined ? fmtCstDate(e.endAt) : '';
 
-  // 数据详情：来源动态的 OCR 文本；单条 RSS 链接固定在标题行右上角
+  // 数据详情：条目说明（description）+ 分类/标签 + 条件性 LLM 证据 + 来源动态 + 其 OCR 文本；标题行右上角固定单条 RSS 链接
   const srcPost = e.postId ? postById.get(e.postId) : undefined;
   const rssHref = `/rss/entry?id=${encodeURIComponent(e.id)}`;
+  // 详情内的小节统一为 .sub（标签）+ .desc（正文），与"条目说明"保持一致
+  const descBlock = e.payload.description
+    ? `<div class="sub">条目说明</div>
+        <div class="desc">${escapeHtml(e.payload.description)}</div>`
+    : '';
+  // 分类（category）：payload 的大类内子类型
+  const catBlock = e.payload.category
+    ? `<div class="sub">分类</div>
+        <div class="desc">${escapeHtml(e.payload.category)}</div>`
+    : '';
+  // 来源标签（tags）：原始动态自带的话题标签
+  const tagsBlock = e.payload.tags?.length
+    ? `<div class="sub">标签</div>
+        <div class="desc">${e.payload.tags.map((t) => `#${escapeHtml(t)}`).join(' ')}</div>`
+    : '';
+  // 来源动态：指认本条目由哪条原始动态产生；有来源时给出跳转到该动态行的锚点链接
+  const srcBlock = srcPost
+    ? `<div class="sub">来源动态</div>
+        <div class="desc"><a href="#post-${encodeURIComponent(srcPost.id)}">${escapeHtml(srcPost.title)}</a></div>`
+    : `<div class="sub">来源动态</div>
+        <div class="desc">无关联动态</div>`;
+  // LLM 证据：仅在时间预估、置信度偏低（<0.7）或存在活动分段时展示，便于核对不确定字段
+  const showEvidence = e.payload.estimated === true || e.payload.confidence < 0.7 || (e.payload.phases?.length ?? 0) > 0;
+  const llmProv = (e.payload.provenance ?? []).filter((p) => p.method === 'llm' && p.evidence);
+  const evidenceBlock = showEvidence && llmProv.length
+    ? `<div class="sub">LLM 证据</div>
+        <ul class="provs">${llmProv.map((p) => {
+        const fields = p.fields.length ? `涉及字段：${p.fields.map(escapeHtml).join('、')}` : '';
+        return `<li>${fields}<div class="ocr">${escapeHtml(p.evidence ?? '')}</div></li>`;
+      }).join('')}</ul>`
+    : '';
   const detail = `<details><summary>数据详情</summary>
-        <div class="sub">来源动态${srcPost ? `：${escapeHtml(srcPost.title)}` : '（无关联动态）'}</div>
-        ${srcPost ? ocrBlock(srcPost.images, ocr) : '<p class="muted">无来源动态，无 OCR 文本。</p>'}
+        ${descBlock}
+        ${catBlock}
+        ${tagsBlock}
+        ${evidenceBlock}
+        ${srcBlock}
+        ${srcPost ? ocrBlock(srcPost.images, ocr) : '<p class="desc muted">无来源动态，无 OCR 文本。</p>'}
       </details>`;
 
-  return `      <li data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}" data-text="${searchText}"><a class="rss-link" href="${rssHref}">RSS</a><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener">${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
+  // 行锚点：供来源动态跳转与外部深链定位
+  const anchorId = `entry-${e.id}`;
+  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}" data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
 }
 
 /**
  * 原始动态单行：发布时间 + 标题（原文链接）+ 图片数。
  * 行上挂 data-* 供内联脚本筛选（时间口径为发布时间，起止同值）；
- * 标题行右上角固定单条 RSS 链接；<details> 原地展开"数据详情"（该动态全部图片的 OCR 文本）。
+ * 标题行右上角固定单条 RSS 链接；行 id 供结构化条目"来源动态"跳转定位；
+ * <details> 原地展开"OCR 文本"（该动态全部图片的 OCR 文本）。
  */
 function postRow(it: StoredPost, ocr: Map<string, OcrRecordView>): string {
   const gameName = GAMES.find((g) => g.id === it.gameId)?.name ?? it.gameId;
   const d = fmtCstDate(it.publishedAt);
   const searchText = attr([gameName, it.title, it.description, it.author].filter(Boolean).join(' '), 600);
-  const tip = it.description ? escapeHtml(it.description.slice(0, 200)) : '';
+  const tip = it.description ? escapeHtml(it.description) : '';
   const imgs = it.images ? ` <span class="imgs">[图 x${it.images.length}]</span>` : '';
   const rssHref = `/rss/post?id=${encodeURIComponent(it.id)}`;
-  const detail = `<details><summary>数据详情</summary>
-        <div class="sub">OCR 文本</div>
+  const detail = `<details><summary>OCR 文本</summary>
         ${ocrBlock(it.images, ocr)}
       </details>`;
-  return `      <li data-game="${escapeHtml(it.gameId)}" data-start="${d}" data-end="${d}" data-text="${searchText}"><a class="rss-link" href="${rssHref}">RSS</a><span class="date" style="width:130px">${fmtCst(it.publishedAt)}</span><span class="tag">${escapeHtml(gameName)}</span><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" title="${tip}">${escapeHtml(it.title)}</a>${imgs}${detail}</li>`;
+  // 行锚点：供结构化条目"来源动态"跳转与外部深链定位
+  const anchorId = `post-${it.id}`;
+  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(it.gameId)}" data-start="${d}" data-end="${d}" data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date" style="width:130px">${fmtCst(it.publishedAt)}</span><span class="tag">${escapeHtml(gameName)}</span><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" title="${tip}">${escapeHtml(it.title)}</a>${imgs}${detail}</li>`;
 }
 
-/** 内联筛选脚本：按游戏 / 分类（条目类型）/ 关键词 / 时间范围就地切换行可见性（不刷新、不发请求） */
+/**
+ * 内联脚本：① 按游戏 / 分类（条目类型）/ 关键词 / 时间范围就地切换行可见性（不刷新、不发请求）；
+ * ② 接管页内 # 锚点跳转，居中定位并高亮落点行（原生锚点靠文档底部时会被滚动上限截断）。
+ */
 const FILTER_SCRIPT = `<script>
 (function () {
   var game = document.getElementById('f-game');
@@ -260,7 +300,6 @@ const FILTER_SCRIPT = `<script>
   var from = document.getElementById('f-from');
   var to = document.getElementById('f-to');
   var reset = document.getElementById('f-reset');
-  var shown = document.getElementById('rows-shown');
   var entriesShown = document.getElementById('entries-shown');
   var postsShown = document.getElementById('posts-shown');
   // 参与筛选的行：结构化条目与原始动态的 li（均带 data-game；OCR/分段等嵌套 li 不带）
@@ -268,7 +307,7 @@ const FILTER_SCRIPT = `<script>
   function apply() {
     var g = game.value, ty = type.value, k = kw.value.trim().toLowerCase(), f = from.value, t = to.value;
     var timeOn = !!(f || t);
-    var n = 0, ne = 0, np = 0;
+    var ne = 0, np = 0;
     rows.forEach(function (row) {
       var ok = true;
       if (g && row.dataset.game !== g) ok = false;
@@ -286,12 +325,11 @@ const FILTER_SCRIPT = `<script>
       }
       // 两个大类的可见数分别统计（ul.entries 内为结构化条目，ul.posts 内为原始动态）
       if (ok) {
-        row.classList.remove('hidden'); n++;
+        row.classList.remove('hidden');
         if (row.closest('ul.entries')) ne++;
         else if (row.closest('ul.posts')) np++;
       } else { row.classList.add('hidden'); }
     });
-    shown.textContent = String(n);
     entriesShown.textContent = String(ne);
     postsShown.textContent = String(np);
   }
@@ -301,6 +339,41 @@ const FILTER_SCRIPT = `<script>
   });
   reset.addEventListener('click', function () { game.value = ''; type.value = ''; kw.value = ''; from.value = ''; to.value = ''; apply(); });
   apply();
+
+  /**
+   * 页内锚点跳转（"来源动态"链接）。
+   * 原生锚点把目标滚到视口顶部，目标靠近文档底部时会被滚动上限截断，落点偏离；
+   * 统一改用 scrollIntoView({ block: 'center' })，并短暂高亮落点行。
+   * 目标若在收起的大类 <details> 内先展开；若被筛选隐藏先清空筛选条件。
+   */
+  function jumpTo(hash) {
+    var id;
+    try { id = decodeURIComponent(hash.slice(1)); } catch (e) { return; }
+    var el = document.getElementById(id);
+    if (!el) return;
+    for (var d = el.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) d.open = true;
+    if (el.classList.contains('hidden')) reset.click();
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('flash');
+    setTimeout(function () { el.classList.remove('flash'); }, 1600);
+  }
+  document.addEventListener('click', function (ev) {
+    var a = ev.target && ev.target.closest ? ev.target.closest('a[href^="#"]') : null;
+    if (!a) return;
+    var hash = a.getAttribute('href');
+    var id;
+    try { id = decodeURIComponent(hash.slice(1)); } catch (e) { return; }
+    if (!id || !document.getElementById(id)) return;
+    ev.preventDefault();
+    history.pushState(null, '', hash);
+    jumpTo(hash);
+  });
+  // 浏览器前进/后退或外部深链进入时同样按居中定位
+  window.addEventListener('hashchange', function () { jumpTo(location.hash); });
+  // 带 fragment 直接打开：原生 fragment 滚动在 load 之后执行，会覆盖脚本内的滚动，故延后到 load
+  window.addEventListener('load', function () {
+    if (location.hash.length > 1) setTimeout(function () { jumpTo(location.hash); }, 0);
+  });
 })();
 </script>`;
 
@@ -314,7 +387,7 @@ export function renderPage(data: PageData): string {
   // 概览卡片：上次拉取结果（相对时间 + 绝对时间 + 口径说明）
   const syncLine = meta
     ? `最近同步 ${fmtRelative(meta.lastRunAt)} <span class="muted">（${fmtCst(meta.lastRunAt)}，用时 ${(meta.durationMs / 1000).toFixed(1)}s）</span><br>
-      本次拉取：新增原始动态 ${meta.added} 条 · 内容更新 ${meta.updated} 条（口径为拉取层去重后 fetched=${meta.fetched} 条）${
+      本次拉取：新增原始动态 ${meta.added} 条 · 内容更新 ${meta.updated} 条 · 未变化 ${Math.max(0, meta.fetched - meta.added - meta.updated)} 条（合计 ${meta.fetched} 条）${
         meta.errors.length > 0 ? `<br><span class="err">拉取失败 ${meta.errors.length} 项：${meta.errors.map(escapeHtml).join('；')}</span>` : ''
       }`
     : '尚未拉取，等待定时任务';
@@ -371,7 +444,6 @@ ${postRows}
   return layout('list', `${overview}
 ${health}
 ${filters}
-  <p class="count-line">共 ${posts.length} 条原始动态、${entries.length} 条结构化条目；筛选后显示 <span id="rows-shown">0</span> 行。</p>
 ${entrySection}
 ${postSection}
   ${FILTER_SCRIPT}`);
@@ -405,17 +477,46 @@ ${rows}
   </ul>`);
 }
 
-/** 单条目在某天的展示形态（日历单元格用） */
-interface DayEvent {
-  /** 展示样式类：start=开始 end=结束 reward=奖励截止 ongoing=进行中 */
-  cls: 'start' | 'end' | 'reward' | 'ongoing';
+/** 日历单日内的落点事件（精确时刻，落在对应单元格） */
+interface DayPoint {
+  /** 落点类型：start=开始 end=结束 reward=奖励截止 */
+  cls: 'start' | 'end' | 'reward';
   /** 单元格内短文本 */
   text: string;
   /** 悬停完整说明 */
   tip: string;
+  /** 筛选与跳转元数据 */
+  gameId: string;
+  type: string;
+  entryId: string;
 }
 
-/** 日历视图：按北京时间把条目铺进 ym（"YYYY-MM"）当月日历 */
+/** 跨天持续条（活动跨越多日时用一条横跨色条表达持续期，不再逐日重复同一事件） */
+interface MonthSpan {
+  /** 起始天索引（当月 0-based，已按月边界截断） */
+  s: number;
+  /** 结束天索引（当月 0-based，含，已按月边界截断） */
+  e: number;
+  /** 真实起点在当月之前（持续条左端不闭合，显示延续标记） */
+  contL: boolean;
+  /** 真实终点在当月之后（持续条右端不闭合，显示延续标记） */
+  contR: boolean;
+  title: string;
+  tip: string;
+  gameId: string;
+  type: string;
+  entryId: string;
+}
+
+/** 单元格内最多同时显示的落点事件数，超出折叠为 +N（前端脚本共用该值） */
+const MAX_PER_CELL = 3;
+
+/**
+ * 日历视图：按北京时间把条目铺进 ym（"YYYY-MM"）当月日历。
+ * 表达方式：起止跨越 2 格以上的活动渲染为一条横跨持续条（按周在日期行上方单独成行，colspan 对齐）；
+ * 其余精确落点（开始/结束/奖励截止）进入当天单元格，超过 MAX_PER_CELL 折叠为 +N（calendar.js 处理展开与筛选）。
+ * 事件与持续条均链接到列表页锚点 /#entry-<id>，由列表页 FILTER_SCRIPT 接管跳转与高亮。
+ */
 export function renderCalendar(entries: StoredEntry[], ym: string): string {
   const monthStart = Math.floor(Date.parse(`${ym}-01T00:00:00+08:00`) / 1000);
   // 下月 1 号（北京时间）→ 当月天数
@@ -429,57 +530,108 @@ export function renderCalendar(entries: StoredEntry[], ym: string): string {
   // 当月 1 号是周几（北京时间；周一=0，用于周一起始网格）
   const firstDow = (new Date((monthStart + 8 * 3600) * 1000).getUTCDay() + 6) % 7;
 
-  // 每天事件桶：条目时间落点（开始/结束/奖励截止）+ 跨越当天的"进行中"
-  const buckets: DayEvent[][] = Array.from({ length: days }, () => []);
+  // 时间戳 → 当月 CST 天索引（可能为负或超出当月）
+  const dayIndexOf = (ts: number): number => Math.floor((ts - monthStart) / DAY);
+
+  // 落点事件分桶 + 持续条收集
+  const buckets: DayPoint[][] = Array.from({ length: days }, () => []);
+  const spans: MonthSpan[] = [];
   for (const e of entries) {
     const label = ENTRY_TYPE_LABEL[e.type as EntryType] ?? e.type;
-    const game = GAMES.find((g) => g.id === e.gameId);
-    const prefix = `${game?.name ?? e.gameId}·${label}`;
+    const gameName = GAMES.find((g) => g.id === e.gameId)?.name ?? e.gameId;
+    const prefix = `${gameName}·${label}`;
     const estTip = e.payload.estimated ? '（预估）' : '';
-    for (let d = 0; d < days; d++) {
-      const dayStart = monthStart + d * DAY;
-      const dayEnd = dayStart + DAY;
-      const cell = buckets[d];
-      if (e.startAt !== undefined && e.startAt >= dayStart && e.startAt < dayEnd) {
-        cell.push({ cls: 'start', text: `始 ${e.title}`, tip: `${prefix} 开始：${e.title}${estTip}` });
-      }
-      if (e.endAt !== undefined && e.endAt >= dayStart && e.endAt < dayEnd) {
-        cell.push({ cls: 'end', text: `终 ${e.title}`, tip: `${prefix} 结束：${e.title}` });
-      }
-      if (e.payload.rewardEndAt !== undefined && e.payload.rewardEndAt >= dayStart && e.payload.rewardEndAt < dayEnd) {
-        cell.push({ cls: 'reward', text: `奖 ${e.title}`, tip: `${prefix} 奖励截止：${e.title}` });
-      }
-      // 进行中：起止都存在且当天被完整跨越（开始/结束当天已单独标注，不重复显示）
-      if (e.startAt !== undefined && e.endAt !== undefined && e.startAt < dayStart && e.endAt >= dayEnd) {
-        cell.push({ cls: 'ongoing', text: e.title, tip: `${prefix} 进行中：${e.title}` });
-      }
+    const meta = { gameId: e.gameId, type: e.type, entryId: e.id };
+    const pushPoint = (idx: number, cls: DayPoint['cls'], text: string, tip: string): void => {
+      if (idx >= 0 && idx < days) buckets[idx].push({ cls, text, tip, ...meta });
+    };
+    const si = e.startAt !== undefined ? dayIndexOf(e.startAt) : undefined;
+    const ei = e.endAt !== undefined ? dayIndexOf(e.endAt) : undefined;
+    // 起止跨越 ≥3 格 → 持续条（精确时刻写入 tooltip）；跨月截断处标记延续
+    if (si !== undefined && ei !== undefined && ei >= si && ei >= 0 && si <= days - 1 && ei - si + 1 >= 3) {
+      spans.push({
+        s: Math.max(si, 0),
+        e: Math.min(ei, days - 1),
+        contL: si < 0,
+        contR: ei > days - 1,
+        title: e.title,
+        tip: `${prefix} 持续：${e.title}${estTip}（${fmtCst(e.startAt!)} → ${fmtCst(e.endAt!)}）`,
+        ...meta,
+      });
     }
+    // 端点始终保留：起点/终点落在当月才成格（跨月时对侧不在本月，自然不显示），
+    // 2 天相邻的活动因此仅以「始/终」两个落点表达，不画条。
+    if (si !== undefined) pushPoint(si, 'start', `始 ${e.title}`, `${prefix} 开始：${e.title}${estTip}`);
+    if (ei !== undefined) pushPoint(ei, 'end', `终 ${e.title}`, `${prefix} 结束：${e.title}`);
+    const rewardAt = e.payload.rewardEndAt;
+    if (rewardAt !== undefined) pushPoint(dayIndexOf(rewardAt), 'reward', `奖 ${e.title}`, `${prefix} 奖励截止：${e.title}（${fmtCst(rewardAt)}）`);
   }
 
-  // 单元格上限：优先显示落点事件（start/end/reward 已先入桶），进行中排最后，超出折叠
-  const MAX_PER_CELL = 3;
+  const pointHtml = (p: DayPoint, hidden: boolean): string =>
+    `<a class="ev ${p.cls}"${hidden ? ' hidden' : ''} data-game="${escapeHtml(p.gameId)}" data-type="${escapeHtml(p.type)}" href="/#entry-${encodeURIComponent(p.entryId)}" title="${escapeHtml(p.tip)}">${escapeHtml(p.text)}</a>`;
+
+  // 周循环：每周先输出该周的持续条行（colspan 对齐），再输出 7 个日期格
   const todayDate = fmtCstDate(Math.floor(Date.now() / 1000));
-  const cells: string[] = [];
-  for (let i = 0; i < firstDow; i++) cells.push('      <td class="pad"></td>');
-  for (let d = 0; d < days; d++) {
-    const dateStr = `${ym}-${String(d + 1).padStart(2, '0')}`;
-    const evs = buckets[d];
-    const shown = evs.slice(0, MAX_PER_CELL)
-      .map((ev) => `<div class="ev ${ev.cls}" title="${escapeHtml(ev.tip)}">${escapeHtml(ev.text)}</div>`)
-      .join('');
-    const more = evs.length > MAX_PER_CELL ? `<div class="more">+${evs.length - MAX_PER_CELL}</div>` : '';
-    cells.push(`      <td${dateStr === todayDate ? ' class="today"' : ''}><div class="dnum">${d + 1}</div>${shown}${more}</td>`);
-  }
-  while (cells.length % 7 !== 0) cells.push('      <td class="pad"></td>');
-  // 每 7 个包一行
+  const weekCount = Math.ceil((firstDow + days) / 7);
   const rows: string[] = [];
-  for (let i = 0; i < cells.length; i += 7) rows.push(`    <tr>\n${cells.slice(i, i + 7).join('\n')}\n    </tr>`);
+  for (let w = 0; w < weekCount; w++) {
+    const weekStart = w * 7 - firstDow;
+    const segs = spans
+      .map((sp) => ({ sp, a: Math.max(sp.s, weekStart), b: Math.min(sp.e, weekStart + 6) }))
+      .filter((x) => x.b >= x.a)
+      .sort((x, z) => x.a - z.a || x.b - z.b);
+    for (const seg of segs) {
+      const colStart = seg.a - weekStart;
+      const colspan = seg.b - seg.a + 1;
+      const isFirst = seg.a === seg.sp.s;
+      const isLast = seg.b === seg.sp.e;
+      // 跨月截断：仅在持续条真实首/末段显示延续标记，避免误读为完整周期
+      const lead = isFirst && seg.sp.contL ? '‹ ' : '';
+      const trail = isLast && seg.sp.contR ? ' ›' : '';
+      const contTip = `${isFirst && seg.sp.contL ? '（延续自上月）' : ''}${isLast && seg.sp.contR ? '（延续至下月）' : ''}`;
+      const leadPad = colStart > 0 ? `<td colspan="${colStart}" class="spanpad"></td>` : '';
+      const trailPad = colStart + colspan < 7 ? `<td colspan="${7 - colStart - colspan}" class="spanpad"></td>` : '';
+      rows.push(`    <tr class="span-row" data-game="${escapeHtml(seg.sp.gameId)}" data-type="${escapeHtml(seg.sp.type)}" role="row">${leadPad}<td colspan="${colspan}" role="gridcell"><a class="bar" href="/#entry-${encodeURIComponent(seg.sp.entryId)}" title="${escapeHtml(seg.sp.tip + contTip)}">${lead}${escapeHtml(seg.sp.title)}${trail}</a></td>${trailPad}</tr>`);
+    }
+    const cells: string[] = [];
+    for (let col = 0; col < 7; col++) {
+      const d = weekStart + col;
+      if (d < 0 || d >= days) { cells.push('      <td class="pad"></td>'); continue; }
+      const dateStr = `${ym}-${String(d + 1).padStart(2, '0')}`;
+      const evs = buckets[d];
+      const shown = evs.slice(0, MAX_PER_CELL).map((p) => pointHtml(p, false)).join('');
+      const extra = evs.slice(MAX_PER_CELL).map((p) => pointHtml(p, true)).join('');
+      // +N 用原生 button：可键盘触发（Enter/Space），点击可展开亦可收起
+      const rest = evs.length - MAX_PER_CELL;
+      const more = rest > 0 ? `<button type="button" class="more" aria-expanded="false" aria-label="展开其余 ${rest} 项">+${rest}</button>` : '';
+      const cls = `dcell${col >= 5 ? ' wknd' : ''}${dateStr === todayDate ? ' today' : ''}`;
+      cells.push(`      <td class="${cls}" role="gridcell" aria-label="${m}月${d + 1}日，${evs.length} 项"><div class="dnum">${d + 1}</div>${shown}${extra}${more}</td>`);
+    }
+    rows.push(`    <tr>\n${cells.join('\n')}\n    </tr>`);
+  }
 
-  // 月导航（北京时间）
+  // 月导航（北京时间）：上月/下月/今天 + 月份选择器
   const pm = m === 1 ? 12 : m - 1;
   const py = m === 1 ? y - 1 : y;
   const pym = `${py}-${String(pm).padStart(2, '0')}`;
-  const calNav = `<div class="calnav"><a href="/calendar?month=${pym}">‹ 上月</a><span class="cur">${ym}</span><a href="/calendar?month=${nym}">下月 ›</a></div>`;
+  const calNav = `  <div class="calnav">
+    <span><a href="/calendar?month=${pym}">‹ 上月</a>　<a href="/calendar?month=${nym}">下月 ›</a>　<a href="/calendar?month=${currentYm()}">今天</a></span>
+    <span class="cur">${ym} <input type="month" id="c-month" value="${ym}"></span>
+  </div>`;
+
+  // 图例：三种落点 + 持续条
+  const legend = `  <div class="callegend">
+    <span class="ev start">始</span>开始　<span class="ev end">终</span>结束　<span class="ev reward">奖</span>奖励截止　<span class="bar">活动名</span>持续中（跨天）
+  </div>`;
+
+  // 筛选：游戏 + 分类，就地显隐（calendar.js），不刷新页面
+  const gameOptions = GAMES.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`).join('');
+  const typeOptions = Object.entries(ENTRY_TYPE_LABEL).map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('');
+  const filters = `  <div class="filters">
+    <label>游戏 <select id="c-game"><option value="">全部</option>${gameOptions}</select></label>
+    <label>分类 <select id="c-type"><option value="">全部</option>${typeOptions}</select></label>
+    <button id="c-reset" type="button">重置</button>
+  </div>`;
 
   // 无锚定时间的条目（仅引用型时间，回填扫描尚未锚定）→ 底部待办列表
   const unanchored = entries.filter((e) => e.startAt === undefined && e.endAt === undefined);
@@ -495,8 +647,10 @@ ${unanchored.map((e) => {
     : '';
 
   return layout('calendar', `${calNav}
-  <table class="cal">
-    <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
+${legend}
+${filters}
+  <table class="cal" role="grid" aria-label="活动日历 ${ym}">
+    <tr><th scope="col" role="columnheader">一</th><th scope="col" role="columnheader">二</th><th scope="col" role="columnheader">三</th><th scope="col" role="columnheader">四</th><th scope="col" role="columnheader">五</th><th scope="col" role="columnheader">六</th><th scope="col" role="columnheader">日</th></tr>
 ${rows.join('\n')}
   </table>
 ${unanchoredSection}`);

@@ -1,6 +1,7 @@
 // 必须最先 import：加载 .env，保证后续 logger/ocr/llm 等模块读到配置
 import '../core/env.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { GAMES } from '../core/games.js';
 import { startScheduler } from '../scheduler.js';
 import { installFatalHandlers, moduleLogger } from '../core/logger.js';
@@ -26,16 +27,36 @@ const log = moduleLogger('web');
  * - GET /rss/post?id=<postId>   单条原始动态 RSS
  * - GET /rss/entry?id=<entryId> 单条结构化条目 RSS（entry id 含 / 与 :，故用查询参数）
  *
+ * 静态资源：
+ * - GET /assets/calendar.css  日历视图样式
+ * - GET /assets/calendar.js   日历视图交互脚本
+ *
  * 数据只读本地存储（data/feed.db），新鲜度由定时任务保证；请求不实时拉取。
  */
 const PORT = Number(process.env.PORT ?? 3000);
 const BASE = `http://localhost:${PORT}`;
+
+// 静态资源从源码目录读取：tsc 不拷贝 .js/.css，故运行时不依赖 dist。
+// dist/web/server.js 与 src/web/server.ts（tsx）两种运行方式均解析到 <项目根>/src/web/assets/。
+const ASSET_DIR = new URL('../../src/web/assets/', import.meta.url);
+const ASSETS: Record<string, { body: string; type: string }> = {
+  '/assets/calendar.css': { body: readFileSync(new URL('calendar.css', ASSET_DIR), 'utf8'), type: 'text/css; charset=utf-8' },
+  '/assets/calendar.js': { body: readFileSync(new URL('calendar.js', ASSET_DIR), 'utf8'), type: 'text/javascript; charset=utf-8' },
+};
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   // 解析路径与查询（month 等参数）；只读本地存储
   const url = new URL(req.url ?? '/', BASE);
   const path = url.pathname;
   try {
+    // 静态资源优先于数据库读取（/assets/* 无需访问 store）
+    const asset = ASSETS[path];
+    if (asset) {
+      res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-cache' });
+      res.end(asset.body);
+      return;
+    }
+
     const posts = await loadPosts();
 
     // ---- 页面 ----
