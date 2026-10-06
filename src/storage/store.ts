@@ -666,17 +666,32 @@ function rowToEntry(row: EntryRow): StoredEntry {
  * 列出待 LLM 结构化的动态：
  * - 从未处理（extracted_at 为 NULL）或处理后内容又更新（extracted_at < updated_at），
  *   且尝试次数未达上限（仅内容类失败累加）；
+ * - OCR 就绪门槛：动态引用的每张图片都已到达终态（识别成功，或失败次数达上限放弃），
+ *   防止 LLM 在图片识别未完成时只依据部分 OCR 文本产出残缺条目；无图动态不受限制；
  * - 冷却：extract_last_attempted_at 距今不足 cooldownSeconds 的跳过（0 等价于不冷却），
  *   避免 LLM 服务故障期间按调度间隔反复硬冲。
  */
 export async function listPostsToExtract(maxAttempts: number, cooldownSeconds = 0): Promise<StoredPost[]> {
+  // 图片放弃门槛取 OCR 侧的最大尝试次数，与 enrichOcr 的放弃判定保持一致
+  const ocrMaxAttempts = Number(process.env.OCR_MAX_ATTEMPTS ?? 3);
+  const ocrMax = Number.isFinite(ocrMaxAttempts) && ocrMaxAttempts >= 1 ? ocrMaxAttempts : 3;
   const rows = db.prepare(`
     SELECT * FROM posts
     WHERE (extracted_at IS NULL OR extracted_at < updated_at)
       AND extract_attempts < ?
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(posts.images) img
+        LEFT JOIN ocr_records o ON o.image_url = img.value
+        WHERE o.status IS NULL
+           OR (o.status = 'failed' AND o.attempts < ?)
+      )
       AND (extract_last_attempted_at IS NULL OR extract_last_attempted_at <= ?)
     ORDER BY published_at DESC
-  `).all(maxAttempts, Math.floor(Date.now() / 1000) - cooldownSeconds) as unknown as PostRow[];
+  `).all(
+    maxAttempts,
+    ocrMax,
+    Math.floor(Date.now() / 1000) - cooldownSeconds,
+  ) as unknown as PostRow[];
   return rows.map(rowToPost);
 }
 
