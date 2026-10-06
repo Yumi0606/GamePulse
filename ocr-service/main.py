@@ -29,6 +29,8 @@ log = logging.getLogger("ocr")
 TILE_MAX_H = int(os.environ.get("OCR_TILE_MAX_H", "2000"))
 # 理想切点上下搜索空白带的半宽（像素）
 TILE_SEARCH_BAND = int(os.environ.get("OCR_TILE_SEARCH_BAND", "240"))
+# 尾段小于该高度（像素）时并入前一片：窄于该值的切片会低于引擎最小边限制而报错
+MIN_TAIL_H = int(os.environ.get("OCR_TILE_MIN_TAIL", "200"))
 # 仅对这些格式切片；GIF 等动态图保持整图字节直送引擎
 TILE_FORMATS = {"JPEG", "PNG"}
 
@@ -62,6 +64,9 @@ def smart_cuts(gray: np.ndarray, max_h: int, band: int) -> list[int]:
             cut = lo + idx
         else:
             cut = y
+        # 尾段过窄则停止切片，尾段并入前一片
+        if h - cut < MIN_TAIL_H:
+            break
         cuts.append(cut)
         y = cut + max_h
     return cuts
@@ -70,7 +75,8 @@ def smart_cuts(gray: np.ndarray, max_h: int, band: int) -> list[int]:
 def recognize_tiles(content: bytes) -> tuple[list[str], int]:
     """对超高图片切片识别，返回（合并后的文本行，切片数）。"""
     img = Image.open(io.BytesIO(content))
-    if img.format not in TILE_FORMATS or img.height <= TILE_MAX_H:
+    # 高度未超阈值，或超出量不足一个最小尾段（切片无收益），整图识别
+    if img.format not in TILE_FORMATS or img.height < TILE_MAX_H + MIN_TAIL_H:
         result = engine(content)
         return list(result.txts or []), 1
 
