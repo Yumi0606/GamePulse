@@ -93,14 +93,79 @@ function processIntervalMs(): number {
   return Math.max(5, envNum('PROCESS_INTERVAL_MINUTES', 30)) * 60_000;
 }
 
-/** 跑一轮处理链（OCR 富化 + LLM 结构化），供拉取循环与独立处理循环复用 */
-export async function runProcessOnce(): Promise<void> {
-  // 处理链第一步：对新图片补 OCR（侧车未启动时熔断并告警，不阻断）
-  await enrichOcr();
+/** 处理链单轮时间预算（秒）：单轮内反复处理小批，到预算即退出，默认 480 */
+function processBudgetSeconds(): number {
+  return Math.max(30, envNum('PROCESS_TIME_BUDGET_SECONDS', 480));
+}
 
-  // 处理链第二步：LLM 拆分为活动/卡池/公告（未配置 LLM 时内部跳过，不阻断）
+/**
+ * 跑一轮处理链（清空式循环 + 时间预算，见评审报告 P2-2）：
+ * 在时间预算内反复执行"OCR 一小批 → LLM 一小批"，直到两个队列均空、熔断或预算耗尽。
+ * OCR/LLM 各自的 BATCH_LIMIT 语义为"每一小批上限"，不再是"每轮上限"。
+ */
+export async function runProcessOnce(): Promise<{
+  iterations: number;
+  imagesDone: number;
+  imagesFailed: number;
+  imagesInfra: number;
+  postsProcessed: number;
+  postsSkipped: number;
+  entries: number;
+  overBudget: boolean;
+}> {
   const gameNames = Object.fromEntries(GAMES.map((g) => [g.id, g.name]));
-  await extractEntries(gameNames);
+  const deadline = Date.now() + processBudgetSeconds() * 1000;
+  log.info('处理链循环开始 budgetSeconds=%d', processBudgetSeconds());
+
+  let iterations = 0;
+  let imagesDone = 0;
+  let imagesFailed = 0;
+  let imagesInfra = 0;
+  let postsProcessed = 0;
+  let postsSkipped = 0;
+  let entryCount = 0;
+  let overBudget = false;
+  const t0 = Date.now();
+
+  // do/while：即使预算很短，也保证至少执行一次（启动即处理的语义）
+  do {
+    iterations++;
+    // 处理链第一步：OCR 一小批（侧车未启动时内部熔断，不阻断）
+    const ocr = await enrichOcr();
+    // 处理链第二步：LLM 一小批（未配置 LLM 时内部跳过，不阻断）
+    const llm = await extractEntries(gameNames);
+
+    imagesDone += ocr.imagesDone;
+    imagesFailed += ocr.imagesFailed;
+    imagesInfra += ocr.imagesInfra;
+    postsProcessed += llm.processed;
+    postsSkipped += llm.skipped;
+    entryCount += llm.entries;
+
+    // 熔断：服务大概率异常，本剩余轮次不再尝试，等待下一轮定时器
+    if (ocr.aborted || llm.aborted) {
+      log.warn('处理链循环遇熔断提前退出 iterations=%d', iterations);
+      break;
+    }
+    // 两个队列均无任务（OCR 无图片处理、LLM 无动态处理）即清空，退出
+    const ocrIdle = ocr.imagesDone + ocr.imagesFailed + ocr.imagesInfra === 0;
+    const llmIdle = llm.processed + llm.skipped + llm.failed === 0;
+    if (ocrIdle && llmIdle) break;
+
+    if (Date.now() >= deadline) {
+      overBudget = true;
+      break;
+    }
+  } while (true);
+
+  log.info(
+    '处理链循环完成 iterations=%d imagesDone=%d imagesFailed=%d imagesInfra=%d postsProcessed=%d postsSkipped=%d entries=%d overBudget=%s costMs=%d',
+    iterations, imagesDone, imagesFailed, imagesInfra, postsProcessed, postsSkipped, entryCount, overBudget, Date.now() - t0,
+  );
+  return {
+    iterations, imagesDone, imagesFailed, imagesInfra,
+    postsProcessed, postsSkipped, entries: entryCount, overBudget,
+  };
 }
 
 /** 跑一次完整拉取并落盘，返回批次统计 */
