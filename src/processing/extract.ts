@@ -47,21 +47,24 @@ function systemPrompt(gameName: string, publishedAt: string, today: string): str
 动态中的时间均为游戏服务器时间（国服=北京时间 UTC+8），无需时区换算。
 
 ## 条目大类（type 只能取以下值）
-- ACTIVITY：游戏内限时活动（副本活动、签到、赛季、危机合约等）
-- GACHA：卡池/祈愿/寻访（标准池、限定池、联动池、新手池）
+- ACTIVITY：游戏内限时活动（副本活动、签到、赛季、危机合约等）；版本更新/核心章节上线本身也算
+- GACHA：卡池/祈愿/寻访（标准池、限定池、联动池、新手池）。**必须原文明确出现寻访/祈愿/卡池开启、概率 UP、某角色进池等招募信息**；仅"新角色登场/上线/依次登场"而无开启时间或概率说明，不算 GACHA（此时至多作为 ACTIVITY 版本预告）
 - SHOP：限时商品（礼包、组合包、限时皮肤、月卡上架）
 - COLLAB：现实世界联动活动（线下联动、IP 合作、主题店、联动展，非游戏内玩法）
 - ANNOUNCEMENT：官方公告（维护预告、问题修复、补偿说明等纯文字通告）
-注意：抽奖转发、周边发售、视频投稿、玩家问卷等与游戏内排期无关的内容 → 输出空数组。
+注意：
+- 抽奖转发、周边/表情包/贴纸/头像上架、视频投稿、玩家问卷等与游戏内排期无关的内容 → 输出空数组。
+- 一条动态可能主体是无关内容（如表情包上架），仅在末尾附带版本/活动预告：只为预告中**信息明确**的排期建条目，不为没有排期细节的角色名编造卡池。
 不确定的信息宁可不产出（宁缺毋滥），不要编造。
 
 ## 提取规则
 1. 一条动态可以拆出多条条目（如同时预告活动和卡池），也可以产出 0 条。
 2. 时间解析：
-   - "2026/10/01 12:00"、"10月1日 12:00"等明确时间 → 输出 ISO 格式 "startAt"/"endAt"（YYYY-MM-DDTHH:mm），代码侧会转 Unix 秒。
-   - 原文没写年份/日期、由你按上下文补全推断的 → 同时置 "estimated": true。
-   - 相对活动起止可推算的偏移表述（"开启后第8天"、"一周后"、"第2周"）→ 不要留 ref，按活动起止推算为具体 "startAt"/"endAt"，并置 "estimated": true。
-   - "版本结束"、"维护后"等完全无法定位的表述 → 填 "startRef"/"endRef" 保留原文，不要猜绝对时间。
+   - 同时给出日期与时刻（"2026/10/01 12:00"、"10月1日 12:00"）→ 输出 "YYYY-MM-DDTHH:mm"，代码侧转 Unix 秒。
+   - 只给日期、没有时刻（"10月8日"、"10月8日维护后"、"10月15日维护"）→ 输出纯日期 "YYYY-MM-DD"（省略时间部分），代码会按该游戏的缺省更新时刻补全；**同时把原文表述原样填入对应一端的 "startRef"/"endRef"**（如 startRef="10月8日维护后"），用于页面标注该时刻为缺省预估，代码会自动置 estimated=true。
+   - 原文没写年份/日期、由你按上下文补全推断的 → 输出你推断的日期/时刻，同时置 "estimated": true。
+   - 相对活动起止可推算的偏移表述（"开启后第8天"、"一周后"、"第2周"）→ 不要留 ref，按活动起止推算为具体日期或时刻，并置 "estimated": true。
+   - 只有完全无法定位到任何日期的表述（如"版本结束"、"维护后"且上下文无具体日期）→ 才只填 "startRef"/"endRef" 保留原文，不填 startAt/endAt。
    - 活动分段（尽可能拆）：活动期内分批开放/新增/解锁的内容都是分段信号——"第X天"、"一周后"、"X月X日起新增"、"上半/下半"、"第一阶段/第二阶段"等，即使原文没有"阶段"字样也要拆成 "phases"。每段 {"title": 段名（原文有就用原文，没有就按内容概括，如"兑换处新增物资"）, "startAt"/"endAt" 或 "startRef"/"endRef", "estimated"}；段时间规则同上；各段按时间顺序排列，段与段可重叠或相邻。
    - 分段宁多勿漏：漏掉分批开放节点会让排期提醒缺失；把握不足的段照样拆出，置 "estimated": true 并降低 confidence。
    - 奖励领取期（活动结束后仍可兑换奖励，不属于分段）→ "rewardEndAt"。
@@ -123,11 +126,42 @@ interface RawEntry {
 const VALID_TYPES = ['ACTIVITY', 'GACHA', 'SHOP', 'COLLAB', 'ANNOUNCEMENT'] as const;
 const VALID_SLOTS = ['activity', 'gacha', 'shop', 'collab', 'announcement'] as const;
 
-/** "YYYY-MM-DDTHH:mm"（或带秒/时区）→ Unix 秒；解析失败返回 undefined */
-function toUnix(iso: string | undefined): number | undefined {
+/**
+ * 纯日期（YYYY-MM-DD）补全用的游戏缺省活动更新时刻（北京时间）。
+ * 原文只给日期（如"10月8日维护后"）时按此补时刻，同时 LLM 保留原文到 startRef/endRef 并标记 estimated。
+ */
+const DATE_DEFAULT_TIME: Record<string, { hour: number; minute: number }> = {
+  arknights: { hour: 4, minute: 0 },       // 明日方舟日常刷新 04:00
+  endfield: { hour: 12, minute: 0 },       // 终末地活动多在 12:00
+  'delta-force': { hour: 0, minute: 0 },   // 三角洲
+  'wuthering-waves': { hour: 4, minute: 0 }, // 鸣潮
+  'azur-lane': { hour: 0, minute: 0 },     // 碧蓝航线
+};
+
+function dateDefaultTime(gameId: string): { hour: number; minute: number } {
+  return DATE_DEFAULT_TIME[gameId] ?? { hour: 0, minute: 0 };
+}
+
+/**
+ * 解析 LLM 输出的时间：
+ * - 纯日期 "YYYY-MM-DD"：原文只给日期（如"10月8日维护后"），按游戏缺省时刻补全，
+ *   dateOnly=true 由调用方标记 estimated；LLM 同时把原文留在 startRef/endRef 供展示；
+ * - "YYYY-MM-DDTHH:mm"：无时区按北京时间；
+ * - 其余（带时区/秒）交给 Date.parse。
+ * 解析失败返回 undefined。
+ */
+function parseTime(iso: string | undefined, gameId: string): { unix: number; dateOnly: boolean } | undefined {
   if (!iso) return undefined;
-  const ms = Date.parse(iso.length === 16 ? `${iso}:00+08:00` : iso); // 无时区按北京时间
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
+  const s = iso.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = dateDefaultTime(gameId);
+    const hh = String(d.hour).padStart(2, '0');
+    const mm = String(d.minute).padStart(2, '0');
+    const ms = Date.parse(`${s}T${hh}:${mm}:00+08:00`);
+    return Number.isFinite(ms) ? { unix: Math.floor(ms / 1000), dateOnly: true } : undefined;
+  }
+  const ms = Date.parse(s.length === 16 ? `${s}:00+08:00` : s);
+  return Number.isFinite(ms) ? { unix: Math.floor(ms / 1000), dateOnly: false } : undefined;
 }
 
 /** 北京时间格式化（sv-SE locale 输出 ISO 样式，供 LLM 上下文与时间推算参照） */
@@ -152,9 +186,12 @@ function normalizeEntry(post: StoredPost, raw: RawEntry): Entry | null {
   if (!VALID_TYPES.includes(type as (typeof VALID_TYPES)[number])) return null;
   if (!VALID_SLOTS.includes(slot as (typeof VALID_SLOTS)[number])) return null;
 
-  const startAt = toUnix(raw.startAt);
-  const endAt = toUnix(raw.endAt);
-  const rewardEndAt = toUnix(raw.rewardEndAt);
+  const start = parseTime(raw.startAt, post.gameId);
+  const end = parseTime(raw.endAt, post.gameId);
+  const reward = parseTime(raw.rewardEndAt, post.gameId);
+  const startAt = start?.unix;
+  const endAt = end?.unix;
+  const rewardEndAt = reward?.unix;
   // 无任何时间信息且无引用型时间的条目无排期价值
   if (startAt === undefined && endAt === undefined && !raw.startRef && !raw.endRef) return null;
 
@@ -177,6 +214,9 @@ function normalizeEntry(post: StoredPost, raw: RawEntry): Entry | null {
   if (post.description) provenance.push({ fields: ['description'], method: 'source', evidence: '动态正文' });
   if (post.images?.length) provenance.push({ fields: ['ocrTexts'], method: 'ocr', evidence: `${post.images.length} 张图片 OCR 文本` });
 
+  // 任一端只有日期没有时刻（按 00:00 补全）时，与 LLM 自标预估合并为预估时间
+  const dateOnlyEstimated = (start?.dateOnly || end?.dateOnly || reward?.dateOnly) === true;
+
   const payload: EntryPayload = {
     summary: raw.summary?.trim() || undefined,
     description: raw.description?.trim() || undefined,
@@ -187,16 +227,20 @@ function normalizeEntry(post: StoredPost, raw: RawEntry): Entry | null {
     endRef: toRef(raw.endRef),
     rewardEndAt,
     phases: raw.phases
-      ?.map((p, i) => ({
-        index: i + 1,
-        title: p.title,
-        startAt: toUnix(p.startAt),
-        endAt: toUnix(p.endAt),
-        startRef: toRef(p.startRef),
-        endRef: toRef(p.endRef),
-        estimated: p.estimated === true ? true : undefined,
-      })),
-    estimated: raw.estimated === true ? true : undefined,
+      ?.map((p, i) => {
+        const ps = parseTime(p.startAt, post.gameId);
+        const pe = parseTime(p.endAt, post.gameId);
+        return {
+          index: i + 1,
+          title: p.title,
+          startAt: ps?.unix,
+          endAt: pe?.unix,
+          startRef: toRef(p.startRef),
+          endRef: toRef(p.endRef),
+          estimated: p.estimated === true || ps?.dateOnly === true || pe?.dateOnly === true ? true : undefined,
+        };
+      }),
+    estimated: raw.estimated === true || dateOnlyEstimated ? true : undefined,
     confidence: typeof raw.confidence === 'number' ? Math.min(Math.max(raw.confidence, 0), 1) : 0.5,
     provenance,
   };
