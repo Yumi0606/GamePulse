@@ -37,5 +37,5 @@ Prompt 原则**宁缺毋滥**：
 
 ## 验证
 
-- 单条：`pnpm build` 后用 `_research/llm_probe/test_one.mjs` dry-run，确认后 `--save`。
+- 单条：`pnpm build` 后用 `_research/llm_probe/run_one.mjs --post <postId>` dry-run，确认后加 `--save`。
 - 先离线探针验证，再单条在线验证，最后才考虑批量。**未经用户验收不得全量重跑或重置**；全量前先说明影响范围与预计调用次数。脚本清单见 `_research/CLAUDE.md`。

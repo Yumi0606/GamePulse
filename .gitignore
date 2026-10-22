@@ -10,6 +10,10 @@ data/
 # OCR 侧车虚拟环境
 ocr-service/.venv/
 
+# Python 字节码缓存（解释器导入时自动生成，随解释器版本变化）
+__pycache__/
+*.py[cod]
+
 # 日志
 *.log
 npm-debug.log*
@@ -21,8 +25,7 @@ pnpm-debug.log*
 *.env
 !.env.example
 
-# 调研探针目录内的依赖（保留探针源码与原始数据，忽略其依赖）
-_research/rssworker_probe/node_modules/
+# 探针目录内的依赖与测试图片
 _research/ocr_probe/.venv/
 _research/ocr_probe/*.png
 

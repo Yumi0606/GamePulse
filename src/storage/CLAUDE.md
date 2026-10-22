@@ -31,5 +31,5 @@
 
 ## 验证
 
-- 库状态：`node _research/llm_probe/check_entries.mjs`；重复检查：`npx tsx _research/llm_probe/check_dup.ts endfield`。
+- 库状态：`node _research/llm_probe/db_entries.mjs --game <gameId>`；重复检查：`node _research/llm_probe/db_dup.mjs <gameId>`。
 - 改存储语义前先导出快照；`data/feed.db` 不入库，误操作无法从 git 恢复。
