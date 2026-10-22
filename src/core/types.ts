@@ -134,8 +134,10 @@ export interface EntryPayload {
   summary?: string;
   /** 条目详细说明（LLM 从正文/OCR 提炼的活动详情），可空 */
   description?: string;
-  /** 大类内子类型（活动类型/卡池类型/公告类型），可空 */
+  /** 大类内子类型（活动类型/卡池类型/公告类型），取值受游戏专属规则词表约束；无合适值为"其他" */
   category?: string;
+  /** 跨动态稳定的活动规范名：同一现实活动的多条报道产出相同值，作为第二阶段跨 post 合并键 */
+  canonicalName?: string;
   /** 语义化主图：LLM 指定第几张动态图（1-based）为该条目 banner，代码侧解析为 Image */
   banner?: Image;
   /** 来源自带标签（B站动态话题 #xxx#），非系统分类 */

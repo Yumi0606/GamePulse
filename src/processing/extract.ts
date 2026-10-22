@@ -1,6 +1,7 @@
 import type { Entry, EntryPayload, EntryType } from '../core/types.js';
 import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type StoredPost } from '../storage/store.js';
 import { chatJSON, llmConfig, llmEnabled, LlmInfraError } from './llm.js';
+import { gameRuleFor, normalizeCategory } from './gameRules.js';
 import { GAMES } from '../core/games.js';
 import { envNum, envStr } from '../core/env.js';
 import { moduleLogger } from '../core/logger.js';
@@ -38,7 +39,16 @@ const KEYWORDS = [
 ];
 
 /** 系统提示：任务定义 + 数据模型 + 时间解析规则 + 输出格式（字段与《调研报告-活动数据结构》§4 对齐） */
-function systemPrompt(gameName: string, publishedAt: string, today: string): string {
+function systemPrompt(gameId: string, gameName: string, publishedAt: string, today: string): string {
+  const rule = gameRuleFor(gameId);
+  const categoryBlock = rule
+    ? Object.entries(rule.categories)
+      .map(([type, cats]) => `  - ${type}：${(cats ?? []).join(' / ')}`)
+      .join('\n')
+    : '';
+  const gameRule = rule
+    ? `${rule.prompt}\n\n### 本游戏 category 词表（只能选其中值，无合适值选"其他"）\n${categoryBlock}`
+    : '';
   return `你是游戏运营信息结构化助手。任务：把游戏官方社媒动态解析为结构化的排期条目。
 
 目标游戏：${gameName}
@@ -55,6 +65,9 @@ function systemPrompt(gameName: string, publishedAt: string, today: string): str
 注意：
 - 抽奖转发、周边/表情包/贴纸/头像上架、视频投稿、玩家问卷等与游戏内排期无关的内容 → 输出空数组。
 - 一条动态可能主体是无关内容（如表情包上架），仅在末尾附带版本/活动预告：只为预告中**信息明确**的排期建条目，不为没有排期细节的角色名编造卡池。
+- 时间视角：以动态发布时间为基准，只收录对读者仍有行动价值（可参与、可领取、可提前安排）的排期。
+  展会/活动的返图、留影、回顾、圆满结束、战报、"感谢参与"等报道类内容，即使活动尚未完全结束，也不产出条目；
+  不要用报道中的历史时间反推条目。只有面向未来的预告、进行中仍可参与的活动、"即将结束/最后 X 天"提醒才产出。
 不确定的信息宁可不产出（宁缺毋滥），不要编造。
 
 ## 提取规则
@@ -72,23 +85,30 @@ function systemPrompt(gameName: string, publishedAt: string, today: string): str
 3. 配图：动态图片按顺序编号（1 开始）。若某张图是该条目的主视觉海报 → 填 "bannerImageIndex"（该图的编号）；图中无对应主图则省略。
 4. 标签：动态正文里的 #话题# 提取到 "tags" 数组（去掉 #，保留原文）。
 5. 每条条目给出 confidence（0~1，表示你对字段正确性的把握）与 evidence（你判断依据的原文关键句）。
+6. canonicalName（活动规范名，必填）：同一现实活动/卡池/商品/事件在多条动态报道中必须给出**完全一致**的规范名，供跨动态合并。
+   - 只取官方系列名/专名，去掉宣传性、报道性、期数以外的措辞差异（"限时活动X"/"全新活动X"/"X限时活动"统一为"X"）。
+   - 必须包含区分不同实例的要素：有官方期数/阶段的含期数（如"第一期""第二段"）；周期性同名条目（常驻寻访、周更商店）含当期核心对象（UP 角色/商品名）；都没有时才追加日期区分。
+   - 例：多条"特许寻访「烟火邀星河」（明河）"报道 → 统一 "特许寻访·烟火邀星河（明河）"；汉堡王联动的 PV 与详情帖 → 统一 "汉堡王联动·美味通行堡已就位"。
 
-## 输出格式（严格 JSON，不要输出任何其他文字；除 type/slot/title/confidence/evidence 外均可省略）
+${gameRule}
+
+## 输出格式（严格 JSON，不要输出任何其他文字；除 type/slot/title/canonicalName/confidence/evidence 外均可省略）
 {
   "items": [
     {
       "type": "ACTIVITY | GACHA | SHOP | COLLAB | ANNOUNCEMENT",
       "slot": "activity | gacha | shop | collab | announcement",
       "title": "条目标题（简短，含版本/活动名）",
+      "canonicalName": "跨动态稳定的活动规范名（见规则 6，必填）",
       "summary": "一句话简述",
       "description": "条目详细说明（从正文/图中文本提炼的活动详情）",
-      "category": "子类型（如 SideStory/限定寻访/维护公告/限时礼包）",
+      "category": "子类型（必须取游戏专属规则词表中的值）",
       "url": "动态中给出的活动页/公告链接",
-      "startAt": "YYYY-MM-DDTHH:mm",
-      "endAt": "YYYY-MM-DDTHH:mm",
-      "startRef": "无法锚定时的开始时间原文",
-      "endRef": "无法锚定时的结束时间原文",
-      "rewardEndAt": "YYYY-MM-DDTHH:mm",
+      "startAt": "YYYY-MM-DDTHH:mm 或 YYYY-MM-DD",
+      "endAt": "YYYY-MM-DDTHH:mm 或 YYYY-MM-DD",
+      "startRef": "纯日期时的原文表述；或无法锚定时的开始时间原文",
+      "endRef": "纯日期时的原文表述；或无法锚定时的结束时间原文",
+      "rewardEndAt": "YYYY-MM-DDTHH:mm 或 YYYY-MM-DD",
       "phases": [{"title": "段名（原文有就用原文）", "startAt": "YYYY-MM-DDTHH:mm", "endAt": "YYYY-MM-DDTHH:mm", "estimated": false}],
       "bannerImageIndex": 1,
       "tags": ["话题标签"],
@@ -105,6 +125,7 @@ interface RawEntry {
   type?: string;
   slot?: string;
   title?: string;
+  canonicalName?: string;
   summary?: string;
   description?: string;
   category?: string;
@@ -186,6 +207,11 @@ function normalizeEntry(post: StoredPost, raw: RawEntry): Entry | null {
   if (!VALID_TYPES.includes(type as (typeof VALID_TYPES)[number])) return null;
   if (!VALID_SLOTS.includes(slot as (typeof VALID_SLOTS)[number])) return null;
 
+  // canonicalName 必填用于第二阶段跨动态合并；LLM 漏给时以标题兜底，保证字段不缺
+  const canonicalName = raw.canonicalName?.trim() || title;
+  // category 受游戏词表约束，词表外值归一为"其他"
+  const category = normalizeCategory(post.gameId, type as EntryType, raw.category);
+
   const start = parseTime(raw.startAt, post.gameId);
   const end = parseTime(raw.endAt, post.gameId);
   const reward = parseTime(raw.rewardEndAt, post.gameId);
@@ -220,9 +246,10 @@ function normalizeEntry(post: StoredPost, raw: RawEntry): Entry | null {
   const payload: EntryPayload = {
     summary: raw.summary?.trim() || undefined,
     description: raw.description?.trim() || undefined,
-    category: raw.category?.trim() || undefined,
+    category,
     banner,
     tags: raw.tags?.map((t) => t.trim()).filter(Boolean),
+    canonicalName,
     startRef: toRef(raw.startRef),
     endRef: toRef(raw.endRef),
     rewardEndAt,
@@ -301,7 +328,7 @@ async function processPost(
   try {
     const out = (await chatJSON({
       // 发布时间与当前日期均给北京时间，避免"X天后/本周五"相对推算被 UTC 口径带偏
-      system: systemPrompt(gameNames[post.gameId] ?? post.gameId, fmtCst(post.publishedAt), CST_D.format(Date.now())),
+      system: systemPrompt(post.gameId, gameNames[post.gameId] ?? post.gameId, fmtCst(post.publishedAt), CST_D.format(Date.now())),
       user,
     })) as { items?: RawEntry[] };
 
