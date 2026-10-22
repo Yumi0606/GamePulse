@@ -356,7 +356,8 @@
       return;
     }
     var left = (todayCell - startCell) * state.cellWidth + state.cellWidth / 2;
-    todayEl.style.left = left + 'px';
+    // 今天线是只约束纵向的 sticky 元素，横向按正常流定位，故用 margin-left
+    todayEl.style.marginLeft = left + 'px';
     todayEl.hidden = false;
   }
 
@@ -668,7 +669,13 @@
   fDir.dataset.dir = 'asc'; // 默认升序，loadPrefs 可能覆盖
   loadPrefs();
   setInitialViewport();
-  // 容器高度：视口高度的 70%
-  container.style.height = Math.max(400, Math.floor(window.innerHeight * 0.7)) + 'px';
+  // 容器高度：视口高度的 70%，下限 400px；同时写入 --gantt-h 供今天线 sticky 高度使用
+  function applyContainerHeight() {
+    var h = Math.max(400, Math.floor(window.innerHeight * 0.7));
+    container.style.height = h + 'px';
+    timeline.style.setProperty('--gantt-h', h + 'px');
+  }
+  applyContainerHeight();
+  window.addEventListener('resize', applyContainerHeight);
   render();
 })();

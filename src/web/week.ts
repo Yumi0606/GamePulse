@@ -87,8 +87,8 @@ export function renderWeek(entries: StoredEntry[], posts: StoredPost[], fromRaw:
   <div class="gantt-container" id="gantt-container">
     <div class="gantt-timeline" id="gantt-timeline">
       <div class="gantt-header" id="gantt-header"></div>
-      <div class="gantt-body" id="gantt-body"></div>
       <div class="gantt-today-line" id="gantt-today" hidden></div>
+      <div class="gantt-body" id="gantt-body"></div>
     </div>
   </div>
   <div class="week-load" id="week-load" hidden>

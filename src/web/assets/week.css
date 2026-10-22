@@ -9,7 +9,10 @@
   background: #fff;
 }
 
-/* 时间轴整体宽度由 JS 按精度与范围动态设置 */
+/* 时间轴整体宽度由 JS 按精度与范围动态设置。
+   position: relative 为今天线提供绝对定位包含块，不影响内部 sticky：
+   sticky 的可位移范围取决于自身宽度与包含块宽度之差，与祖先的
+   position 无关（见 .gantt-label / .gantt-group-header 注释）。 */
 .gantt-timeline {
   position: relative;
   --cell-width: 80px;       /* 单格宽度，精度切换时由 JS 改此变量 */
@@ -45,14 +48,17 @@
 .gantt-header-cell.weekend { background: #fbfaf6; }
 .gantt-header-cell.today { background: #fff3e0; color: #f5712c; font-weight: 600; }
 
-/* 分组标题行：sticky top + left（纵向滚动停在表头下，横向滚动左边缘固定）
-   BUG: sticky left 未生效，横向滚动时分组标题随内容一起滚走。与活动名 sticky
-   为同一类问题，后续统一排查。 */
+/* 分组标题行：sticky top + left（纵向滚动停在表头下，横向滚动左边缘固定）。
+   必须用 width: fit-content 把宽度收缩到文字宽度：sticky 元素的横向可
+   位移量 = 包含块宽 − 自身宽；块级元素默认宽度等于时间轴全宽，余量为
+   0，left sticky 永不触发。收缩后标题文字固定在视口左边缘，灰底则靠
+   ::after 伪元素向右延伸一屏补齐，使背景仍横贯视口。 */
 .gantt-group-header {
   position: sticky;
   top: var(--timeline-header-height);
   left: 0;
   z-index: 25;
+  width: fit-content;
   height: var(--group-header-height);
   background: #f0f0f0;
   border-bottom: 1px solid #ccc;
@@ -63,9 +69,21 @@
   font-weight: 600;
   color: #333;
 }
+/* 标题固定后，文字右侧的灰底由伪元素补齐：跟随标题固定，向右延伸一屏；
+   绝对定位不占据布局宽度，不会扩大滚动范围 */
+.gantt-group-header::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 100vw;
+  background: #f0f0f0;
+  border-bottom: 1px solid #ccc;
+}
 .gantt-group-header .count { color: #888; font-weight: normal; margin-left: 6px; font-size: 12px; }
 
-/* 活动行：单行高度，行内有网格底纹，色条绝对定位其上 */
+/* 活动行：单行高度，行内有网格底纹，色条正常流定位 */
 .gantt-row {
   position: relative;
   height: var(--row-height);
@@ -76,7 +94,6 @@
 .gantt-row:hover { background-color: #fafafa; }
 
 /* 色条：正常流中用 margin-left 定位起始位置，width 控制跨度；
-   static 定位，使内部 sticky 活动名的包含块为滚动容器，sticky 才能生效；
    overflow:visible 让 sticky 活动名可超出色条右边缘 */
 .gantt-bar-fill {
   height: calc(var(--row-height) - 6px);
@@ -101,15 +118,19 @@
 .gantt-bar-fill.state-active { opacity: 1; }
 .gantt-bar-fill.state-ended  { background: #bbb !important; opacity: 0.7; }
 
-/* 活动名 + chip：色条内部，sticky left 固定可见；无独立背景，文字在色条上
-   BUG: 活动名与游戏分组标题的 sticky left 未生效，活动名随色条滚出视口后消失。
-   原因待查：色条用 margin-left 定位（正常流），活动名在色条内部 position:sticky，
-   理论上当色条左边缘到达视口左边时应固定，但实测仍随色条滚动。后续需排查
-   sticky 包含块/滚动容器链路。 */
+/* 活动名 + chip：色条内部，sticky left 固定在视口左边缘；无独立背景，文字在色条上。
+   必须用 width: fit-content 把宽度收缩到内容宽度：sticky 元素的横向可
+   位移量 = 包含块（色条）宽 − 自身宽。label 默认作为块级元素填满色条
+   （与色条同宽，可达数千像素），余量为 0，left sticky 永不触发，文字
+   只会随色条整体滚动。max-width:100% 保证窄色条上文字仍被 overflow
+   裁切，不会溢出到色条外。色条右边缘滚出视口后，活动名随色条一起离开，
+   这是 sticky 的正常边界行为。 */
 .gantt-label {
   position: sticky;
   left: 0;
   z-index: 2;
+  width: fit-content;
+  max-width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
@@ -135,19 +156,22 @@
   background: rgba(255, 255, 255, 0.25);
   color: #fff;
   white-space: nowrap;
-  max-width: 70px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 今天指示线：跨整个时间轴高度 */
+/* 今天指示线：sticky 只约束纵向（top），不设 left——横向作为正常流元素
+   由 JS 写 margin-left 定位，随内容横向滚动；纵向始终贴在日期表头下方。
+   高度等于容器可视高度（--gantt-h 由 JS 写入），负 margin-bottom 抵消
+   自身占位，避免把活动行整体下推。z-index 高于分组标题(25)与色条。 */
 .gantt-today-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
+  position: sticky;
+  top: var(--timeline-header-height);
+  z-index: 26;
   width: 2px;
+  height: calc(var(--gantt-h, 400px) - var(--timeline-header-height));
+  margin-bottom: calc((var(--gantt-h, 400px) - var(--timeline-header-height)) * -1);
   background: #e01b24;
-  z-index: 5;
   pointer-events: none;
 }
 
