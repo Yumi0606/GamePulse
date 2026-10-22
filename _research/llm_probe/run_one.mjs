@@ -77,7 +77,7 @@ for (const postId of targets) {
     console.log('----------------------------------');
   }
   if (r.entries.length === 0) {
-    console.log('(无条目：预过滤跳过或 LLM 判定无排期信息)');
+    console.log('(无条目：LLM 判定无排期信息，或正文与 OCR 均为空)');
     continue;
   }
 

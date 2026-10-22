@@ -81,6 +81,26 @@ export interface TimeRef {
   refId?: string;
   /** 锚定状态：unanchored=待回填；anchored=已回填绝对值；estimated=估计值 */
   state: 'unanchored' | 'anchored' | 'estimated';
+  /** 语义锚定最近一次尝试时间，Unix 秒；早于最新维护公告则需要重试 */
+  semanticCheckedAt?: number;
+  /** 语义锚定结论说明（LLM 给出 null 时记录原因，供审计） */
+  semanticNote?: string;
+}
+
+/**
+ * 维护窗口：从停机维护公告中抽取的确定性时间事实。
+ * startAt/endAt 均为 Unix 秒，按北京时间解释；endAt 是"维护后"的锚点，startAt 是"维护"作为结束边界的锚点。
+ */
+export interface MaintenanceWindow {
+  /** 稳定 id：`${gameId}:${startAt}`，同一窗口多条公告幂等 */
+  id: string;
+  gameId: string;
+  startAt: number;
+  endAt: number;
+  /** 最近一次公告发布时间，Unix 秒 */
+  announcedAt: number;
+  /** 最近一次公告对应的动态 id（posts.id） */
+  sourcePostId: string;
 }
 
 /** 活动分段（调研报告 §3 Phase） */

@@ -2,6 +2,12 @@ import { runPipeline } from './sources/pipeline.js';
 import { saveMeta, upsertPosts, type FetchMeta } from './storage/store.js';
 import { enrichOcr } from './processing/enrich.js';
 import { extractEntries } from './processing/extract.js';
+import {
+  anchorAllMaintenanceRefs,
+  maintenanceGameIds,
+  syncMaintenanceWindows,
+} from './processing/maintenance.js';
+import { resolveAllSemanticRefs } from './processing/semanticAnchor.js';
 import { GAMES } from './core/games.js';
 import { envNum } from './core/env.js';
 import { moduleLogger } from './core/logger.js';
@@ -117,6 +123,13 @@ export async function runProcessOnce(): Promise<{
   const deadline = Date.now() + processBudgetSeconds() * 1000;
   log.info('处理链循环开始 budgetSeconds=%d', processBudgetSeconds());
 
+  // 维护窗口先于 LLM：公告原文已在 posts 中，不依赖结构化结果；
+  // 先回填一次可让本轮新提取的条目在候选上下文中看到已锚定的时间。
+  await syncMaintenanceWindows();
+  await anchorAllMaintenanceRefs();
+  // 固定模式无法覆盖的引用交给 LLM；无新公告且已检查过的引用会跳过
+  await resolveAllSemanticRefs(maintenanceGameIds());
+
   let iterations = 0;
   let imagesDone = 0;
   let imagesFailed = 0;
@@ -157,6 +170,9 @@ export async function runProcessOnce(): Promise<{
       break;
     }
   } while (true);
+
+  // 本轮 LLM 可能新建了带维护引用的条目，结束时补一次回填；窗口未更新时幂等无写
+  if (entryCount > 0) await anchorAllMaintenanceRefs();
 
   log.info(
     '处理链循环完成 iterations=%d imagesDone=%d imagesFailed=%d imagesInfra=%d postsProcessed=%d postsSkipped=%d entries=%d overBudget=%s costMs=%d',

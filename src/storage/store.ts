@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import type { Entry, EntryPayload, Item } from '../core/types.js';
-import { normalizeCanonicalName } from '../core/types.js';
+import type { Entry, EntryPayload, Item, MaintenanceWindow, TimeRef } from '../core/types.js';
+import { eventKey, normalizeCanonicalName } from '../core/types.js';
 import { normalizeImageUrl } from '../core/imageUrl.js';
 import { moduleLogger } from '../core/logger.js';
 
@@ -32,6 +32,8 @@ export interface StoredPost extends Item {
   firstSeenAt: number;
   /** 内容最近一次变化时间，Unix 秒 */
   updatedAt: number;
+  /** 最近一次成功提取产出的条目数；undefined=从未成功提取 */
+  entryCount?: number;
 }
 
 /** 拉取批次统计 */
@@ -98,6 +100,7 @@ interface PostRow {
   images: string | null;
   first_seen_at: number;
   updated_at: number;
+  entry_count: number | null;
 }
 
 /** 打开数据库连接（模块级单例），建表并执行历史迁移 */
@@ -120,10 +123,11 @@ function openDb(): DatabaseSync {
       images        TEXT,               -- 图片 URL 列表（JSON 数组字符串），OCR 的输入；无图为 NULL
       first_seen_at INTEGER NOT NULL,   -- 首次入库时间，Unix 秒（拉取覆盖时保留）
       updated_at    INTEGER NOT NULL,   -- 内容最近一次变化时间，Unix 秒；内容未变不刷新（下游幂等依据）
-      extracted_at  INTEGER,            -- LLM 结构化完成时间，Unix 秒；NULL=未处理（含预过滤跳过也写入）
+      extracted_at  INTEGER,            -- LLM 结构化完成时间，Unix 秒；NULL=未处理（正文与 OCR 均为空时也写入跳过标记）
       extract_attempts INTEGER NOT NULL DEFAULT 0, -- LLM 结构化累计尝试次数（仅内容类失败累加，见 markExtractFailure）
       extract_last_error TEXT,          -- 最近一次结构化失败原因（infra/内容失败都记录）
-      extract_last_attempted_at INTEGER -- 最近一次结构化尝试时间，Unix 秒；重试冷却依据（NULL=从未尝试）
+      extract_last_attempted_at INTEGER, -- 最近一次结构化尝试时间，Unix 秒；重试冷却依据（NULL=从未尝试）
+      entry_count   INTEGER             -- 最近一次成功提取产出的条目数（0=已处理但无排期；NULL=从未成功提取）
       -- 注意：拉取层覆盖走 INSERT OR REPLACE，未列出的上述状态列会被重置——
       -- 即"内容变化"时 extracted_at/extract_attempts 自动归零重新入队（隐式语义，勿给这些列加默认值）
     );
@@ -188,6 +192,18 @@ function openDb(): DatabaseSync {
     );
     -- 未恢复集合（主页通知计数）与异常页时间倒序列表共用
     CREATE INDEX IF NOT EXISTS idx_events_open ON events(resolved_at, occurred_at DESC);
+
+    -- 维护窗口事实：从停机维护公告抽取，供「下次维护后」等引用型时间确定性回填。
+    -- 生命周期独立于 entries：公告可能先于/晚于活动动态出现，窗口需长期保留。
+    CREATE TABLE IF NOT EXISTS maintenance_windows (
+      id             TEXT PRIMARY KEY,   -- gameId:startAt
+      game_id        TEXT NOT NULL,
+      start_at       INTEGER NOT NULL,   -- 维护开始，Unix 秒
+      end_at         INTEGER NOT NULL,   -- 维护结束，Unix 秒（"维护后"的锚点）
+      announced_at   INTEGER NOT NULL,   -- 最近一次公告发布时间，Unix 秒
+      source_post_id TEXT NOT NULL       -- 最近一次公告动态 id
+    );
+    CREATE INDEX IF NOT EXISTS idx_maintenance_game ON maintenance_windows(game_id, start_at);
   `);
   migrateFromJsonFiles(db);
   migrateFromItemsTable(db);
@@ -264,7 +280,8 @@ function migratePostsExtract(db: DatabaseSync): void {
     Number(ensureColumn(db, 'posts', 'extracted_at', 'extracted_at INTEGER')) +
     Number(ensureColumn(db, 'posts', 'extract_attempts', 'extract_attempts INTEGER NOT NULL DEFAULT 0')) +
     Number(ensureColumn(db, 'posts', 'extract_last_error', 'extract_last_error TEXT')) +
-    Number(ensureColumn(db, 'posts', 'extract_last_attempted_at', 'extract_last_attempted_at INTEGER'));
+    Number(ensureColumn(db, 'posts', 'extract_last_attempted_at', 'extract_last_attempted_at INTEGER')) +
+    Number(ensureColumn(db, 'posts', 'entry_count', 'entry_count INTEGER'));
   if (added > 0) log.info('posts 已补 LLM 处理状态列 count=%d', added);
 }
 
@@ -359,6 +376,7 @@ function rowToPost(row: PostRow): StoredPost {
     images: row.images ? (JSON.parse(row.images) as string[]) : undefined,
     firstSeenAt: row.first_seen_at,
     updatedAt: row.updated_at,
+    entryCount: row.entry_count ?? undefined,
   };
 }
 
@@ -696,9 +714,13 @@ export async function listPostsToExtract(maxAttempts: number, cooldownSeconds = 
   return rows.map(rowToPost);
 }
 
-/** 标记动态已结构化（含"预过滤跳过：无需结构化"的情形） */
-export async function markExtracted(postId: string): Promise<void> {
-  db.prepare('UPDATE posts SET extracted_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), postId);
+/**
+ * 标记动态已结构化并记录本次产出条目数。
+ * entryCount=0 表示已处理但判定无排期；从未成功提取时该列为 NULL。
+ */
+export async function markExtracted(postId: string, entryCount: number): Promise<void> {
+  db.prepare('UPDATE posts SET extracted_at = ?, entry_count = ? WHERE id = ?')
+    .run(Math.floor(Date.now() / 1000), entryCount, postId);
 }
 
 /**
@@ -855,8 +877,28 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
 
   const pickTime = (a: number | undefined, b: number | undefined): number | undefined => b ?? a;
 
-  const startAt = pickTime(existing.startAt, incoming.startAt);
-  const endAt = pickTime(existing.endAt, incoming.endAt);
+  /** 引用与绝对值必须来自同一来源，避免「新引用 + 旧绝对值」拼出互相矛盾的排期 */
+  const pickSchedule = (
+    aAt: number | undefined,
+    aRef: TimeRef | undefined,
+    bAt: number | undefined,
+    bRef: TimeRef | undefined,
+  ): { at?: number; ref?: TimeRef } => {
+    if (bRef) {
+      // 新来源给了引用：有绝对值就整对采用；没有则仅在引用文本一致时沿用旧绝对值
+      if (bAt != null) return { at: bAt, ref: bRef };
+      const sameRef = aRef != null
+        && normalizeCanonicalName(aRef.refText) === normalizeCanonicalName(bRef.refText);
+      return { at: sameRef ? aAt : undefined, ref: bRef };
+    }
+    if (aRef) return { at: aAt, ref: aRef };
+    return { at: bAt ?? aAt, ref: undefined };
+  };
+
+  const start = pickSchedule(existing.startAt, ex.startRef, incoming.startAt, inc.startRef);
+  const end = pickSchedule(existing.endAt, ex.endRef, incoming.endAt, inc.endRef);
+  const startAt = start.at;
+  const endAt = end.at;
   const rewardEndAt = pickTime(ex.rewardEndAt, inc.rewardEndAt);
 
   // 分段取并集，按开始时间排序并重排 index
@@ -888,8 +930,8 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
     canonicalName: ex.canonicalName || inc.canonicalName,
     banner: pickText(ex.banner, inc.banner),
     tags: tags.length > 0 ? tags : undefined,
-    startRef: pickText(ex.startRef, inc.startRef),
-    endRef: pickText(ex.endRef, inc.endRef),
+    startRef: start.ref,
+    endRef: end.ref,
     rewardEndAt,
     phases: phases.length > 0 ? phases : undefined,
     estimated: ex.estimated || inc.estimated,
@@ -915,6 +957,108 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
   };
 }
 
+/** 去掉 eventKey 末尾的括号限定（如「归野(明河)」→「归野」），只用于重复判定 */
+function stripTrailingQualifier(key: string): string {
+  let out = key;
+  for (let i = 0; i < 4; i++) {
+    const next = out.replace(/\([^()]*\)$/, '').trim();
+    if (next === out || next === '') break;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * 合并库内确定性重复条目（修复历史重复，纯代码，不调用 LLM）。
+ *
+ * 判定：同 game + type，`eventKey` 去掉末尾括号限定后完全相等，
+ * 且两端 `start_at` 都非空、相差不超过 1 天。只按名称会让不同月份的同类公告被误并；
+ * 只用时间会让同一天的不同活动被误并，因此两个条件同时要求。
+ *
+ * 保留 `first_seen_at` 最早的条目，字段沿用 mergeEntry 语义，来源列表取并集。
+ */
+export async function mergeDuplicateEntries(gameId?: string): Promise<{
+  groups: number;
+  removed: number;
+  details: string[];
+}> {
+  const now = Math.floor(Date.now() / 1000);
+  const rows = (gameId
+    ? db.prepare('SELECT * FROM entries WHERE game_id = ?').all(gameId)
+    : db.prepare('SELECT * FROM entries').all()) as unknown as EntryRow[];
+
+  const buckets = new Map<string, EntryRow[]>();
+  for (const row of rows) {
+    const p = JSON.parse(row.payload) as EntryPayload;
+    const key = stripTrailingQualifier(eventKey(p.canonicalName || row.title, row.type));
+    if (!key) continue;
+    const bucketKey = `${row.game_id}\u0000${row.type}\u0000${key}`;
+    const list = buckets.get(bucketKey);
+    if (list) list.push(row);
+    else buckets.set(bucketKey, [row]);
+  }
+
+  const ins = db.prepare(`
+    INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, payload, first_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      post_id = excluded.post_id, title = excluded.title, url = excluded.url,
+      published_at = excluded.published_at, start_at = excluded.start_at, end_at = excluded.end_at,
+      payload = excluded.payload, updated_at = excluded.updated_at
+  `);
+  const delOne = db.prepare('DELETE FROM entries WHERE id = ?');
+
+  let groups = 0;
+  let removed = 0;
+  const details: string[] = [];
+
+  db.exec('BEGIN');
+  try {
+    for (const bucket of buckets.values()) {
+      if (bucket.length < 2) continue;
+      bucket.sort((a, b) => a.first_seen_at - b.first_seen_at);
+      const base = bucket[0];
+      if (base.start_at == null) continue;
+
+      const victims = bucket.slice(1).filter((row) => {
+        if (row.start_at == null) return false;
+        return Math.abs(row.start_at - (base.start_at as number)) <= 86400;
+      });
+      if (victims.length === 0) continue;
+
+      let cur = rowToEntry(base);
+      for (const row of victims) {
+        const inc = rowToEntry(row);
+        const next = mergeEntry(cur, { ...inc, id: base.id });
+        const carry = inc.payload.extra?.postIds ?? (inc.postId ? [inc.postId] : []);
+        const own = next.payload.extra?.postIds ?? [];
+        next.payload.extra = {
+          ...next.payload.extra,
+          postIds: [...new Set([...own, ...carry])],
+        };
+        cur = { ...next, firstSeenAt: cur.firstSeenAt, updatedAt: now };
+        details.push(`${base.id} ← ${row.id}（${row.title}）`);
+      }
+
+      ins.run(
+        cur.id, cur.postId ?? null, cur.gameId, cur.type, cur.source, cur.sourceId,
+        cur.title, cur.url ?? null, cur.publishedAt ?? null, cur.startAt ?? null, cur.endAt ?? null,
+        JSON.stringify(cur.payload), cur.firstSeenAt, now,
+      );
+      for (const row of victims) delOne.run(row.id);
+      groups++;
+      removed += victims.length;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  if (removed > 0) log.info('重复条目合并完成 groups=%d removed=%d', groups, removed);
+  return { groups, removed, details };
+}
+
 /** 读取全量结构化条目（按结束时间升序，NULL 排最后） */
 export async function loadEntries(): Promise<StoredEntry[]> {
   const rows = db.prepare(`
@@ -928,4 +1072,68 @@ export async function loadEntries(): Promise<StoredEntry[]> {
 export async function listEntriesByGame(gameId: string): Promise<StoredEntry[]> {
   const rows = db.prepare('SELECT * FROM entries WHERE game_id = ?').all(gameId) as unknown as EntryRow[];
   return rows.map(rowToEntry);
+}
+
+// ==================== 维护窗口（引用型时间回填） ====================
+
+/**
+ * 写入维护窗口事实，按 `${gameId}:${startAt}` 幂等。
+ * 同一窗口被多条公告报道时，保留最新的结束时间与来源（公告可能修正时段）。
+ */
+export async function upsertMaintenanceWindows(windows: MaintenanceWindow[]): Promise<number> {
+  if (windows.length === 0) return 0;
+  const stmt = db.prepare(`
+    INSERT INTO maintenance_windows (id, game_id, start_at, end_at, announced_at, source_post_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      end_at = excluded.end_at,
+      announced_at = MAX(maintenance_windows.announced_at, excluded.announced_at),
+      source_post_id = CASE
+        WHEN excluded.announced_at >= maintenance_windows.announced_at THEN excluded.source_post_id
+        ELSE maintenance_windows.source_post_id
+      END
+  `);
+  db.exec('BEGIN');
+  try {
+    for (const w of windows) {
+      stmt.run(w.id, w.gameId, w.startAt, w.endAt, w.announcedAt, w.sourcePostId);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return windows.length;
+}
+
+/** 读取某游戏的维护窗口，按开始时间升序 */
+export async function listMaintenanceWindows(gameId: string): Promise<MaintenanceWindow[]> {
+  const rows = db.prepare(
+    'SELECT id, game_id, start_at, end_at, announced_at, source_post_id FROM maintenance_windows WHERE game_id = ? ORDER BY start_at',
+  ).all(gameId) as unknown as {
+    id: string; game_id: string; start_at: number; end_at: number; announced_at: number; source_post_id: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    gameId: r.game_id,
+    startAt: r.start_at,
+    endAt: r.end_at,
+    announcedAt: r.announced_at,
+    sourcePostId: r.source_post_id,
+  }));
+}
+
+/**
+ * 回填写入：只更新排期字段与 payload，不触碰 title/url/来源列。
+ * 供维护窗口锚定与 LLM 语义锚定共用，保留 updated_at 语义。
+ */
+export async function updateEntrySchedule(
+  id: string,
+  startAt: number | undefined,
+  endAt: number | undefined,
+  payload: EntryPayload,
+): Promise<void> {
+  db.prepare(
+    'UPDATE entries SET start_at = ?, end_at = ?, payload = ?, updated_at = ? WHERE id = ?',
+  ).run(startAt ?? null, endAt ?? null, JSON.stringify(payload), Math.floor(Date.now() / 1000), id);
 }

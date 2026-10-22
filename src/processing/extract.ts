@@ -14,9 +14,9 @@ const log = moduleLogger('extract');
  * LLM 结构化（结构化处理链第二步，见 PRD §5.3）：
  * 动态（正文 + 图片 OCR 文本）→ 拆分为活动/卡池/公告条目（entries 表）。
  *
- * 链路：选待处理动态 → 关键词预过滤（无关动态直接标记跳过，省 token）→
- *       组装上下文（正文 + OCR + 发布日期 + 当前日期）→ LLM 拆分 →
+ * 链路：选待处理动态 → 组装上下文（正文 + OCR + 发布日期 + 当前日期）→ LLM 拆分 →
  *       校验与规整（时间字符串转 Unix 秒、id 合成、置信度/溯源）→ 整体替换入库。
+ * 不做关键词预过滤：是否与排期有关由 Prompt 规则判断，避免因词表覆盖不全永久漏掉活动。
  *
  * 幂等：post 内容未变（updated_at 未刷新）不重跑；重跑时按 post 整体替换 entries。
  * 兜底：单条失败记 attempts，达上限放弃；LLM 未配置时整个步骤跳过。
@@ -32,13 +32,6 @@ const RETRY_COOLDOWN = () => envNum('LLM_RETRY_COOLDOWN', 300);
 const INFRA_BREAK_STREAK = 3;
 /** 产出源标识（写入 entries.source） */
 const SOURCE = 'llm-bilibili';
-
-/** 关键词预过滤：标题/正文/OCR 文本均不含这些词的动态大概率与活动无关 */
-const KEYWORDS = [
-  '活动', '卡池', '祈愿', '寻访', '补给', '限定', '复刻', '联动', '版本', '更新',
-  '公告', '维护', '上线', '开启', '开始', '结束', '截止', '签到', '赛季', '任务',
-  '礼包', '商城', '兑换', '奖励', 'PV', '预告', '招募', '肝', '倒计时', '上架',
-];
 
 /** 系统提示：任务定义 + 数据模型 + 时间解析规则 + 输出格式（字段与《调研报告-活动数据结构》§4 对齐） */
 function systemPrompt(
@@ -394,7 +387,7 @@ async function buildUserContent(post: StoredPost, gameName: string): Promise<str
 
 /**
  * 处理单条动态（批处理与单条测试共用的核心路径）：
- * 组装上下文 → 关键词预过滤 → LLM 拆分 → 规整 → （save=true 时）替换入库并标记。
+ * 组装上下文 → LLM 拆分 → 规整 → （save=true 时）替换入库并标记。
  * save=false 为 dry-run：只算不写，不消耗幂等状态，可反复测试。
  * failed 时带 infra 标记（基础设施失败，供熔断判定）。
  */
@@ -415,20 +408,16 @@ async function processPost(
   const user = await buildUserContent(post, gameNames[post.gameId] ?? post.gameId);
   if (!user) {
     // 正文与 OCR 均为空，无从结构化：标记跳过避免反复进入队列
-    if (save) await markExtracted(post.id);
+    if (save) await markExtracted(post.id, 0);
     return { status: 'skipped', entries: [], user };
   }
-  // 关键词预过滤：完全不含任何活动相关词的动态直接跳过，省 token
-  const haystack = `${post.title}\n${user}`;
-  if (!KEYWORDS.some((k) => haystack.includes(k))) {
-    log.debug('预过滤跳过 postId=%s', post.id);
-    if (save) await markExtracted(post.id);
-    return { status: 'skipped', entries: [], user };
-  }
-
+  // 与排期无关的动态由 Prompt 规则判定为 0 条，不在代码侧按关键词拦截：
+  // 词表无法覆盖所有游戏的用词，硬过滤会让含活动的动态被永久标记为已处理。
   try {
     // 召回本游戏历史条目作为候选：LLM 若判定为同一活动，复用候选 id 完成跨动态合并
-    const candidates = await recallCandidates(post.gameId, haystack);
+    // 召回查询文本仍取标题 + 正文 + OCR，名称命中兜底依赖它
+    const recallText = `${post.title}\n${user}`;
+    const candidates = await recallCandidates(post.gameId, recallText);
     const candidateIndex = new Map(candidates.flatMap((c) => c.entryIds.map((id) => [id, c] as const)));
     // eventKey 索引：LLM 未填 matchedEntryId 时的确定性兜底，只做完全相等匹配
     const keyIndex = new Map(candidates.map((c) => [`${c.type}\u0000${c.eventKey}`, c] as const));
@@ -447,7 +436,7 @@ async function processPost(
       .filter((e): e is Entry => e !== null);
     if (save) {
       await replaceEntriesForPost(post.id, entries);
-      await markExtracted(post.id);
+      await markExtracted(post.id, entries.length);
     }
     log.debug(
       '结构化完成 postId=%s entries=%d types=%s',
