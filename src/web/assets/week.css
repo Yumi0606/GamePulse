@@ -45,7 +45,9 @@
 .gantt-header-cell.weekend { background: #fbfaf6; }
 .gantt-header-cell.today { background: #fff3e0; color: #f5712c; font-weight: 600; }
 
-/* 分组标题行：sticky top + left（纵向滚动停在表头下，横向滚动左边缘固定） */
+/* 分组标题行：sticky top + left（纵向滚动停在表头下，横向滚动左边缘固定）
+   BUG: sticky left 未生效，横向滚动时分组标题随内容一起滚走。与活动名 sticky
+   为同一类问题，后续统一排查。 */
 .gantt-group-header {
   position: sticky;
   top: var(--timeline-header-height);
@@ -63,71 +65,27 @@
 }
 .gantt-group-header .count { color: #888; font-weight: normal; margin-left: 6px; font-size: 12px; }
 
-/* 活动行：单行高度，条横跨整个时间轴宽度 */
+/* 活动行：单行高度，行内有网格底纹，色条绝对定位其上 */
 .gantt-row {
   position: relative;
   height: var(--row-height);
   border-bottom: 1px solid #f3f3f3;
-}
-.gantt-row:hover { background: #fafafa; }
-
-/* 甘特条：行容器，内部包含 sticky 的活动名 + 绝对定位的色条 */
-.gantt-bar {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  cursor: pointer;
   background-image: linear-gradient(to right, #f5f5f5 1px, transparent 1px);
   background-size: var(--cell-width) 100%;
 }
+.gantt-row:hover { background-color: #fafafa; }
 
-/* 活动名 + chip：在条内部左侧，sticky left 固定可见；半透明白底让色条颜色透出 */
-.gantt-label {
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  width: 160px;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.88);
-  border-right: 1px solid #eee;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  overflow: hidden;
-  box-sizing: border-box;
-}
-.gantt-bar:hover .gantt-label { background: rgba(245, 245, 245, 0.92); }
-.gantt-name {
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-.gantt-chip {
-  flex-shrink: 0;
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 8px;
-  background: #eef3fa;
-  color: #1a5fb4;
-  white-space: nowrap;
-  max-width: 70px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 色条：条内绝对定位，按起止时间设置 left/width */
+/* 色条：正常流中用 margin-left 定位起始位置，width 控制跨度；
+   static 定位，使内部 sticky 活动名的包含块为滚动容器，sticky 才能生效；
+   overflow:visible 让 sticky 活动名可超出色条右边缘 */
 .gantt-bar-fill {
-  position: absolute;
-  top: 3px;
-  bottom: 3px;
+  height: calc(var(--row-height) - 6px);
+  margin-top: 3px;
   border-radius: 3px;
   min-width: 2px;
   box-sizing: border-box;
-  z-index: 1;
+  overflow: visible;
+  cursor: pointer;
 }
 .gantt-bar-fill.no-start { border-left: 2px dashed #999; }
 
@@ -142,6 +100,45 @@
 .gantt-bar-fill.state-future { opacity: 0.45; }
 .gantt-bar-fill.state-active { opacity: 1; }
 .gantt-bar-fill.state-ended  { background: #bbb !important; opacity: 0.7; }
+
+/* 活动名 + chip：色条内部，sticky left 固定可见；无独立背景，文字在色条上
+   BUG: 活动名与游戏分组标题的 sticky left 未生效，活动名随色条滚出视口后消失。
+   原因待查：色条用 margin-left 定位（正常流），活动名在色条内部 position:sticky，
+   理论上当色条左边缘到达视口左边时应固定，但实测仍随色条滚动。后续需排查
+   sticky 包含块/滚动容器链路。 */
+.gantt-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.gantt-name {
+  font-size: 12px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+.gantt-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  white-space: nowrap;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* 今天指示线：跨整个时间轴高度 */
 .gantt-today-line {

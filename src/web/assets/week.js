@@ -214,7 +214,7 @@
     var startCell = cellIndex(state.viewStart, state.precision);
     var endCell = cellIndex(state.viewEnd, state.precision);
     var cells = endCell - startCell + 1;
-    timeline.style.width = (cells * state.cellWidth + 160) + 'px'; // +160 活动名列
+    timeline.style.width = (cells * state.cellWidth) + 'px';
     timeline.style.setProperty('--cell-width', state.cellWidth + 'px');
     timeline.style.setProperty('--row-height', state.rowHeight + 'px');
   }
@@ -223,7 +223,7 @@
   function renderHeader() {
     var startCell = cellIndex(state.viewStart, state.precision);
     var endCell = cellIndex(state.viewEnd, state.precision);
-    var html = '<div class="gantt-header-cell" style="flex:0 0 160px;min-width:160px;border-right:1px solid #ddd;"></div>';
+    var html = '';
     for (var c = startCell; c <= endCell; c++) {
       var cls = 'gantt-header-cell';
       if (isWeekendCell(c, state.precision)) cls += ' weekend';
@@ -315,32 +315,33 @@
       var eIdx = cellIndex(e.endAt, state.precision);
       var left = (sIdx - startCell) * state.cellWidth;
       var width = (eIdx - sIdx + 1) * state.cellWidth;
-      fillStyle = 'left:' + left + 'px;width:' + width + 'px;';
+      fillStyle = 'margin-left:' + left + 'px;width:' + width + 'px;';
     } else if (!hasStart && hasEnd) {
       // 无起点：从视口最左端画到结束日
       var eIdx = cellIndex(e.endAt, state.precision);
       var width = (eIdx - startCell + 1) * state.cellWidth;
-      fillStyle = 'left:0;width:' + width + 'px;';
+      fillStyle = 'margin-left:0;width:' + width + 'px;';
       fillCls += ' no-start';
     } else if (hasStart && !hasEnd) {
       // 无终点：从起点画到视口最右端
       var sIdx = cellIndex(e.startAt, state.precision);
       var left = (sIdx - startCell) * state.cellWidth;
       var width = (endCell - sIdx + 1) * state.cellWidth;
-      fillStyle = 'left:' + left + 'px;width:' + width + 'px;';
+      fillStyle = 'margin-left:' + left + 'px;width:' + width + 'px;';
     } else {
       // 两端皆无：不画条（进待锚定列表）
       return '';
     }
 
     var name = e.canonicalName || e.title;
+    // 活动名放在色条内部，正常流位置即色条左边缘，无需 margin-left；
+    // sticky left:0 让活动名在色条可见时固定到视口左边，色条滚出后随之离开
     return '<div class="gantt-row">' +
-      '<div class="gantt-bar" data-entry-id="' + e.id + '">' +
+      '<div class="' + fillCls + '" data-type="' + e.type + '" data-entry-id="' + e.id + '" style="' + fillStyle + '">' +
         '<div class="gantt-label" title="' + esc(name) + '">' +
           '<span class="gantt-name">' + esc(name) + '</span>' +
           '<span class="gantt-chip">' + esc(chipText) + '</span>' +
         '</div>' +
-        '<div class="' + fillCls + '" data-type="' + e.type + '" style="' + fillStyle + '"></div>' +
       '</div>' +
     '</div>';
   }
@@ -354,7 +355,7 @@
       todayEl.hidden = true;
       return;
     }
-    var left = 160 + (todayCell - startCell) * state.cellWidth + state.cellWidth / 2;
+    var left = (todayCell - startCell) * state.cellWidth + state.cellWidth / 2;
     todayEl.style.left = left + 'px';
     todayEl.hidden = false;
   }
@@ -381,19 +382,29 @@
     unanchoredEl.innerHTML = html;
   }
 
-  /** 更新加载按钮可见性：仅在滚到对应边缘时显示 */
-  function updateLoadButtons() {
-    var sl = container.scrollLeft;
-    var maxScroll = container.scrollWidth - container.clientWidth;
-    var atLeft = sl <= 4;
-    var atRight = sl >= maxScroll - 4;
-    btnEarlier.style.display = atLeft ? '' : 'none';
-    btnLater.style.display = atRight ? '' : 'none';
-    loadEl.hidden = !(atLeft || atRight);
+  /** 计算数据实际时间范围，用于判断是否还有更多可加载 */
+  function getDataRange() {
+    var minStart = Infinity, maxEnd = -Infinity;
+    entries.forEach(function (e) {
+      if (e.startAt !== null && e.startAt < minStart) minStart = e.startAt;
+      if (e.endAt !== null && e.endAt > maxEnd) maxEnd = e.endAt;
+    });
+    return { minStart: minStart === Infinity ? null : minStart, maxEnd: maxEnd === -Infinity ? null : maxEnd };
   }
 
-  // 滚动时更新按钮可见性
-  container.addEventListener('scroll', updateLoadButtons);
+  /** 更新加载按钮状态：始终显示，无更多数据时置灰禁用 */
+  function updateLoadButtons() {
+    var range = getDataRange();
+    var noEarlier = range.minStart !== null && state.viewStart <= range.minStart - LOAD_WEEKS * 7 * DAY;
+    var noLater = range.maxEnd !== null && state.viewEnd >= range.maxEnd + LOAD_WEEKS * 7 * DAY;
+    btnEarlier.disabled = noEarlier;
+    btnLater.disabled = noLater;
+    btnEarlier.style.opacity = noEarlier ? '0.4' : '1';
+    btnLater.style.opacity = noLater ? '0.4' : '1';
+    btnEarlier.style.cursor = noEarlier ? 'not-allowed' : 'pointer';
+    btnLater.style.cursor = noLater ? 'not-allowed' : 'pointer';
+    loadEl.hidden = false;
+  }
 
   // ---------- 交互：滚轮 ----------
 
@@ -467,7 +478,7 @@
   // ---------- 交互：点击条弹出 popover ----------
 
   function handleClick(e) {
-    var bar = e.target.closest('.gantt-bar');
+    var bar = e.target.closest('[data-entry-id]');
     if (!bar) { hidePopover(); return; }
     var id = bar.dataset.entryId;
     var entry = entries.find(function (en) { return en.id === id; });
@@ -499,7 +510,7 @@
 
   function hidePopover() { popover.hidden = true; }
   document.addEventListener('click', function (e) {
-    if (!e.target.closest('.gantt-bar') && !e.target.closest('.gantt-popover')) hidePopover();
+    if (!e.target.closest('[data-entry-id]') && !e.target.closest('.gantt-popover')) hidePopover();
   });
 
   // ---------- 交互：筛选与排序 ----------
@@ -520,15 +531,25 @@
     el.addEventListener('change', applyFilters);
   });
 
+  /** 根据当前方向刷新排序按钮的箭头与 title（与列表视图提示文案一致） */
+  function updateDirButton() {
+    var asc = fDir.dataset.dir === 'asc';
+    fDir.textContent = asc ? '↑' : '↓';
+    fDir.title = asc
+      ? '当前升序（早→晚 / 短→长），点击切换为降序'
+      : '当前降序（晚→早 / 长→短），点击切换为升序';
+  }
+
   fDir.addEventListener('click', function () {
     fDir.dataset.dir = fDir.dataset.dir === 'asc' ? 'desc' : 'asc';
-    fDir.textContent = fDir.dataset.dir === 'asc' ? '↑' : '↓';
+    updateDirButton();
     applyFilters();
   });
 
   fReset.addEventListener('click', function () {
     fGame.value = ''; fType.value = ''; fKw.value = '';
-    fSort.value = 'start'; fDir.dataset.dir = 'asc'; fDir.textContent = '↑';
+    fSort.value = 'start'; fDir.dataset.dir = 'asc';
+    updateDirButton();
     fEnded.checked = false;
     applyFilters();
   });
@@ -545,7 +566,8 @@
       if (p.type) fType.value = p.type;
       if (p.kw) fKw.value = p.kw;
       if (p.sort) fSort.value = p.sort;
-      if (p.dir === 'desc') { fDir.dataset.dir = 'desc'; fDir.textContent = '↓'; }
+      if (p.dir === 'desc') { fDir.dataset.dir = 'desc'; }
+      updateDirButton();
       if (p.ended) fEnded.checked = true;
       state.filterGame = fGame.value;
       state.filterType = fType.value;
@@ -616,7 +638,7 @@
       // 单击：模拟点击
       var t = e.changedTouches[0];
       var el = document.elementFromPoint(t.clientX, t.clientY);
-      var bar = el && el.closest('.gantt-bar');
+      var bar = el && el.closest('[data-entry-id]');
       if (bar) {
         var id = bar.dataset.entryId;
         var entry = entries.find(function (en) { return en.id === id; });
@@ -643,6 +665,7 @@
   };
 
   // ---------- 启动 ----------
+  fDir.dataset.dir = 'asc'; // 默认升序，loadPrefs 可能覆盖
   loadPrefs();
   setInitialViewport();
   // 容器高度：视口高度的 70%

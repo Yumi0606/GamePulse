@@ -39,13 +39,20 @@ const BASE = `http://localhost:${PORT}`;
 
 // 静态资源从源码目录读取：tsc 不拷贝 .js/.css，故运行时不依赖 dist。
 // dist/web/server.js 与 src/web/server.ts（tsx）两种运行方式均解析到 <项目根>/src/web/assets/。
+// 每次请求按需读取磁盘，不缓存，便于本地开发时修改 CSS/JS 后刷新即生效。
 const ASSET_DIR = new URL('../../src/web/assets/', import.meta.url);
-const ASSETS: Record<string, { body: string; type: string }> = {
-  '/assets/calendar.css': { body: readFileSync(new URL('calendar.css', ASSET_DIR), 'utf8'), type: 'text/css; charset=utf-8' },
-  '/assets/calendar.js': { body: readFileSync(new URL('calendar.js', ASSET_DIR), 'utf8'), type: 'text/javascript; charset=utf-8' },
-  '/assets/week.css': { body: readFileSync(new URL('week.css', ASSET_DIR), 'utf8'), type: 'text/css; charset=utf-8' },
-  '/assets/week.js': { body: readFileSync(new URL('week.js', ASSET_DIR), 'utf8'), type: 'text/javascript; charset=utf-8' },
+const ASSET_TYPES: Record<string, string> = {
+  '/assets/calendar.css': 'text/css; charset=utf-8',
+  '/assets/calendar.js': 'text/javascript; charset=utf-8',
+  '/assets/week.css': 'text/css; charset=utf-8',
+  '/assets/week.js': 'text/javascript; charset=utf-8',
 };
+function readAsset(path: string): { body: string; type: string } | null {
+  const type = ASSET_TYPES[path];
+  if (!type) return null;
+  const file = path.slice('/assets/'.length);
+  return { body: readFileSync(new URL(file, ASSET_DIR), 'utf8'), type };
+}
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   // 解析路径与查询（month 等参数）；只读本地存储
@@ -53,7 +60,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const path = url.pathname;
   try {
     // 静态资源优先于数据库读取（/assets/* 无需访问 store）
-    const asset = ASSETS[path];
+    const asset = readAsset(path);
     if (asset) {
       res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-cache' });
       res.end(asset.body);
