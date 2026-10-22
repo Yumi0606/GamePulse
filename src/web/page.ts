@@ -143,8 +143,8 @@ const STYLE = `
 `;
 
 /** 页面骨架：导航（视图切换 + 源健康页 + 两类 RSS 入口）+ 正文 */
-function layout(active: 'list' | 'calendar' | 'health', body: string): string {
-  const navItem = (href: string, label: string, key: 'list' | 'calendar' | 'health') =>
+function layout(active: 'list' | 'calendar' | 'week' | 'health', body: string): string {
+  const navItem = (href: string, label: string, key: 'list' | 'calendar' | 'week' | 'health') =>
     `<a href="${href}"${active === key ? ' style="font-weight:600"' : ''}>${label}</a>`;
   // 日历视图的样式与交互抽为静态资源（见 server.ts 的 /assets/* 路由），避免内联脚本膨胀
   const assets = active === 'calendar'
@@ -160,7 +160,7 @@ function layout(active: 'list' | 'calendar' | 'health', body: string): string {
 <body>
   <h1>GamePulse · 游戏活动排期</h1>
   <nav>
-    ${navItem('/', '列表', 'list')} · ${navItem('/calendar', '日历', 'calendar')} · ${navItem('/health', '源健康', 'health')}
+    ${navItem('/', '列表', 'list')} · ${navItem('/calendar', '日历', 'calendar')} · ${navItem('/week', '周', 'week')} · ${navItem('/health', '源健康', 'health')}
     ｜ RSS 订阅：<a href="/rss/posts">原始动态</a> · <a href="/rss/entries">结构化条目</a>
   </nav>
 ${body}
@@ -264,7 +264,9 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
 
   // 行锚点：供来源动态跳转与外部深链定位
   const anchorId = `entry-${e.id}`;
-  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}" data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
+  const startTs = e.startAt !== undefined ? ` data-start-ts="${e.startAt}"` : '';
+  const endTs = e.endAt !== undefined ? ` data-end-ts="${e.endAt}"` : '';
+  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}"${startTs}${endTs} data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
 }
 
 /**
@@ -302,15 +304,48 @@ const FILTER_SCRIPT = `<script>
   var from = document.getElementById('f-from');
   var to = document.getElementById('f-to');
   var reset = document.getElementById('f-reset');
+  var sortBy = document.getElementById('f-sort');
+  var sortDir = document.getElementById('f-dir');
+  var showEnded = document.getElementById('f-ended');
   var entriesShown = document.getElementById('entries-shown');
   var postsShown = document.getElementById('posts-shown');
   // 参与筛选的行：结构化条目与原始动态的 li（均带 data-game；OCR/分段等嵌套 li 不带）
   var rows = Array.prototype.slice.call(document.querySelectorAll('li[data-game]'));
+
+  // 排序/过滤状态持久化（localStorage）；解析失败或无存储时回退默认
+  var PREF_KEY = 'gp-list-prefs';
+  var defaultPrefs = { sort: 'end', dir: 'asc', ended: false };
+  function loadPrefs() {
+    try {
+      var p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}');
+      return {
+        sort: p.sort === 'start' || p.sort === 'duration' ? p.sort : 'end',
+        dir: p.dir === 'desc' ? 'desc' : 'asc',
+        ended: p.ended === true,
+      };
+    } catch (e) { return Object.assign({}, defaultPrefs); }
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREF_KEY, JSON.stringify({ sort: sortBy.value, dir: sortDir.dataset.dir, ended: showEnded.checked }));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+  }
+  var prefs = loadPrefs();
+  sortBy.value = prefs.sort;
+  sortDir.dataset.dir = prefs.dir;
+  sortDir.textContent = prefs.dir === 'asc' ? '↑' : '↓';
+  sortDir.title = prefs.dir === 'asc'
+    ? '当前升序（早→晚 / 短→长），点击切换为降序'
+    : '当前降序（晚→早 / 长→短），点击切换为升序';
+  showEnded.checked = prefs.ended;
+
   function apply() {
     var g = game.value, ty = type.value, k = kw.value.trim().toLowerCase(), f = from.value, t = to.value;
     var timeOn = !!(f || t);
+    var nowSec = Math.floor(Date.now() / 1000);
     var ne = 0, np = 0;
     rows.forEach(function (row) {
+      var isEntry = !!row.closest('ul.entries');
       var ok = true;
       if (g && row.dataset.game !== g) ok = false;
       // 分类 = 条目类型，仅作用于结构化条目；原始动态无 data-type，不受该筛选项约束
@@ -325,21 +360,82 @@ const FILTER_SCRIPT = `<script>
           if (ok && t && s && s > t) ok = false;
         }
       }
+      // 已结束过滤仅作用于结构化条目：有结束时间且已过；默认隐藏
+      if (ok && isEntry && !showEnded.checked && row.dataset.endTs && Number(row.dataset.endTs) < nowSec) ok = false;
       // 两个大类的可见数分别统计（ul.entries 内为结构化条目，ul.posts 内为原始动态）
       if (ok) {
         row.classList.remove('hidden');
-        if (row.closest('ul.entries')) ne++;
+        if (isEntry) ne++;
         else if (row.closest('ul.posts')) np++;
       } else { row.classList.add('hidden'); }
     });
     entriesShown.textContent = String(ne);
     postsShown.textContent = String(np);
+    sortEntries();
   }
-  [game, type, kw, from, to].forEach(function (el) {
+
+  /**
+   * 结构化条目排序（仅前端重排 ul.entries 内的 li）：
+   * - 已结束条目（endTs<now）始终沉到未结束条目之后，不受升降序影响；
+   * - 未结束组内按所选键（开始/结束/持续时间）排序，持续时间=endTs-startTs，缺键沉底；
+   * - 只在当前 DOM 行间排，筛选隐藏的行同样参与重排（显隐与排序解耦）。
+   */
+  function sortEntries() {
+    var ul = document.querySelector('ul.entries');
+    if (!ul) return;
+    var key = sortBy.value;
+    var asc = sortDir.dataset.dir === 'asc';
+    var nowSec = Math.floor(Date.now() / 1000);
+    var val = function (row) {
+      var s = row.dataset.startTs ? Number(row.dataset.startTs) : null;
+      var e = row.dataset.endTs ? Number(row.dataset.endTs) : null;
+      if (key === 'start') return s;
+      if (key === 'end') return e;
+      return s !== null && e !== null ? e - s : null; // duration
+    };
+    var ended = function (row) {
+      // 必须显式转布尔：无 endTs 时 dataset 返回 ""，与 false 不等会破坏比较器一致性
+      return !!(row.dataset.endTs && Number(row.dataset.endTs) < nowSec);
+    };
+    var lis = Array.prototype.slice.call(ul.querySelectorAll('li[data-game]'));
+    lis.sort(function (a, b) {
+      var ae = ended(a), be = ended(b);
+      if (ae !== be) return ae ? 1 : -1;       // 已结束统一沉底
+      var va = val(a), vb = val(b);
+      if (va === null && vb === null) return 0;
+      // 有排序值的行在前、缺值行沉底（升降序一致）；有值行之间再按方向排
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      return asc ? va - vb : vb - va;
+    });
+    lis.forEach(function (li) { ul.appendChild(li); });
+  }
+
+  [game, type, kw, from, to, sortBy, showEnded].forEach(function (el) {
     el.addEventListener('input', apply);
     el.addEventListener('change', apply);
   });
-  reset.addEventListener('click', function () { game.value = ''; type.value = ''; kw.value = ''; from.value = ''; to.value = ''; apply(); });
+  sortDir.addEventListener('click', function () {
+    sortDir.dataset.dir = sortDir.dataset.dir === 'asc' ? 'desc' : 'asc';
+    var asc = sortDir.dataset.dir === 'asc';
+    sortDir.textContent = asc ? '↑' : '↓';
+    sortDir.title = asc
+      ? '当前升序（早→晚 / 短→长），点击切换为降序'
+      : '当前降序（晚→早 / 长→短），点击切换为升序';
+    savePrefs();
+    apply();
+  });
+  [sortBy, showEnded].forEach(function (el) { el.addEventListener('change', savePrefs); });
+  reset.addEventListener('click', function () {
+    game.value = ''; type.value = ''; kw.value = ''; from.value = ''; to.value = '';
+    sortBy.value = defaultPrefs.sort;
+    sortDir.dataset.dir = defaultPrefs.dir;
+    sortDir.textContent = '↑';
+    sortDir.title = '当前升序（早→晚 / 短→长），点击切换为降序';
+    showEnded.checked = defaultPrefs.ended;
+    savePrefs();
+    apply();
+  });
   apply();
 
   /**
@@ -453,6 +549,15 @@ export function renderPage(data: PageData): string {
     <label>关键词 <input id="f-kw" type="search" placeholder="活动名 / 标题 / 正文"></label>
     <label>起 <input id="f-from" type="date"></label>
     <label>止 <input id="f-to" type="date"></label>
+    <label title="仅对结构化数据生效">排序
+      <select id="f-sort">
+        <option value="end">结束时间</option>
+        <option value="start">开始时间</option>
+        <option value="duration">持续时间</option>
+      </select>
+    </label>
+    <button id="f-dir" type="button" title="当前升序（早→晚 / 短→长），点击切换为降序">↑</button>
+    <label title="勾选后显示结束时间已过的活动，它们始终排在未结束活动之后"><input id="f-ended" type="checkbox">显示已结束</label>
     <button id="f-reset" type="button">重置</button>
   </div>`;
 

@@ -1,0 +1,161 @@
+/* 周视图甘特图样式（仅 /week 加载） */
+
+/* 滚动容器：横向+纵向；高度由 JS 设为视口高度 */
+.gantt-container {
+  overflow: auto;
+  position: relative;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* 时间轴整体宽度由 JS 按精度与范围动态设置 */
+.gantt-timeline {
+  position: relative;
+  --cell-width: 80px;       /* 单格宽度，精度切换时由 JS 改此变量 */
+  --row-height: 32px;       /* 活动行高，Ctrl+滚轮缩放 */
+  --group-header-height: 28px;
+  --timeline-header-height: 32px;
+}
+
+/* 日期表头：sticky top，横向跟随滚动 */
+.gantt-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--timeline-header-height);
+  background: #fafafa;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  align-items: stretch;
+}
+.gantt-header-cell {
+  flex: 0 0 var(--cell-width);
+  border-right: 1px solid #eee;
+  font-size: 11px;
+  color: #666;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 2px 0;
+  line-height: 1.2;
+}
+.gantt-header-cell.weekend { background: #fbfaf6; }
+.gantt-header-cell.today { background: #fff3e0; color: #f5712c; font-weight: 600; }
+
+/* 分组标题行：sticky top + left（纵向滚动停在表头下，横向滚动左边缘固定） */
+.gantt-group-header {
+  position: sticky;
+  top: var(--timeline-header-height);
+  left: 0;
+  z-index: 25;
+  height: var(--group-header-height);
+  background: #f0f0f0;
+  border-bottom: 1px solid #ccc;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+.gantt-group-header .count { color: #888; font-weight: normal; margin-left: 6px; font-size: 12px; }
+
+/* 活动行：单行高度，条横跨整个时间轴宽度 */
+.gantt-row {
+  position: relative;
+  height: var(--row-height);
+  border-bottom: 1px solid #f3f3f3;
+}
+.gantt-row:hover { background: #fafafa; }
+
+/* 甘特条：行容器，内部包含 sticky 的活动名 + 绝对定位的色条 */
+.gantt-bar {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  background-image: linear-gradient(to right, #f5f5f5 1px, transparent 1px);
+  background-size: var(--cell-width) 100%;
+}
+
+/* 活动名 + chip：在条内部左侧，sticky left 固定可见；半透明白底让色条颜色透出 */
+.gantt-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 160px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.88);
+  border-right: 1px solid #eee;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.gantt-bar:hover .gantt-label { background: rgba(245, 245, 245, 0.92); }
+.gantt-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.gantt-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: #eef3fa;
+  color: #1a5fb4;
+  white-space: nowrap;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 色条：条内绝对定位，按起止时间设置 left/width */
+.gantt-bar-fill {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 3px;
+  min-width: 2px;
+  box-sizing: border-box;
+  z-index: 1;
+}
+.gantt-bar-fill.no-start { border-left: 2px dashed #999; }
+
+/* 色条按类型着色 */
+.gantt-bar-fill[data-type="ACTIVITY"]     { background: #4a90c2; }
+.gantt-bar-fill[data-type="GACHA"]        { background: #8a6cc9; }
+.gantt-bar-fill[data-type="SHOP"]         { background: #d98a3c; }
+.gantt-bar-fill[data-type="COLLAB"]       { background: #3fa87a; }
+.gantt-bar-fill[data-type="ANNOUNCEMENT"] { background: #888; }
+
+/* 状态层：未开始半透明；已结束置灰 */
+.gantt-bar-fill.state-future { opacity: 0.45; }
+.gantt-bar-fill.state-active { opacity: 1; }
+.gantt-bar-fill.state-ended  { background: #bbb !important; opacity: 0.7; }
+
+/* 今天指示线：跨整个时间轴高度 */
+.gantt-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #e01b24;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* 隐藏已结束行时 */
+.gantt-row.row-ended-hidden { display: none; }
+
+/* 空状态 */
+.gantt-empty { padding: 40px; text-align: center; color: #999; font-size: 14px; }

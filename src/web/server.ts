@@ -8,6 +8,7 @@ import { installFatalHandlers, moduleLogger } from '../core/logger.js';
 import { loadPosts, loadEntries, loadMeta, listEvents, countUnresolvedEvents, countPendingExtract, countUnrecognizedImages, latestUnresolvedEvent, loadOcrRecords } from '../storage/store.js';
 import { buildGameRss, buildAggregatedRss, buildEntriesRss, buildSinglePostRss, buildSingleEntryRss } from './rss.js';
 import { renderPage, renderCalendar, renderHealth, parseMonth } from './page.js';
+import { renderWeek } from './week.js';
 
 const log = moduleLogger('web');
 
@@ -42,6 +43,8 @@ const ASSET_DIR = new URL('../../src/web/assets/', import.meta.url);
 const ASSETS: Record<string, { body: string; type: string }> = {
   '/assets/calendar.css': { body: readFileSync(new URL('calendar.css', ASSET_DIR), 'utf8'), type: 'text/css; charset=utf-8' },
   '/assets/calendar.js': { body: readFileSync(new URL('calendar.js', ASSET_DIR), 'utf8'), type: 'text/javascript; charset=utf-8' },
+  '/assets/week.css': { body: readFileSync(new URL('week.css', ASSET_DIR), 'utf8'), type: 'text/css; charset=utf-8' },
+  '/assets/week.js': { body: readFileSync(new URL('week.js', ASSET_DIR), 'utf8'), type: 'text/javascript; charset=utf-8' },
 };
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -73,6 +76,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const entries = await loadEntries();
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(renderCalendar(entries, parseMonth(url.searchParams.get('month'))));
+      return;
+    }
+
+    if (path === '/week') {
+      const [entries, posts] = await Promise.all([loadEntries(), loadPosts()]);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(renderWeek(entries, posts, url.searchParams.get('from')));
       return;
     }
 
@@ -152,7 +162,7 @@ function notFound(res: ServerResponse, text: string): void {
 server.listen(PORT, () => {
   installFatalHandlers(); // 常驻服务进程级兜底：漏 catch 的 Promise 拒绝不再静默杀进程
   log.info('Web 服务已启动 port=%d', PORT);
-  log.info('页面: GET / 列表视图 | GET /calendar?month=YYYY-MM 日历视图 | GET /health 源健康');
+  log.info('页面: GET / 列表视图 | GET /calendar?month=YYYY-MM 日历视图 | GET /week?from=YYYY-MM-DD 周视图 | GET /health 源健康');
   log.info('RSS: /rss/posts 原始动态 | /rss/entries 结构化条目（均可追加 /<gameId>）| /rss/post?id= 与 /rss/entry?id= 单条');
   // 启动定时拉取：立即执行一次，之后按间隔刷新本地存储
   startScheduler();
