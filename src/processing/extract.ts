@@ -1,5 +1,5 @@
 import type { Entry, EntryPayload, EntryType } from '../core/types.js';
-import { normalizeCanonicalName } from '../core/types.js';
+import { eventKey, normalizeCanonicalName } from '../core/types.js';
 import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type StoredPost } from '../storage/store.js';
 import { chatJSON, llmConfig, llmEnabled, LlmInfraError } from './llm.js';
 import { gameRuleFor, normalizeCategory } from './gameRules.js';
@@ -101,9 +101,10 @@ function systemPrompt(
      若官方专名本身包含「版本」等字样（如「丹青渡」版本活动），按官方名称整体保留，不要额外叠加其他前缀。
    - 必须包含区分不同实例的要素：有官方期数/阶段的含期数（如"第一期""第二段"）；周期性同名条目（常驻寻访、周更商店）含当期核心对象（UP 角色/商品名）；都没有时才追加日期区分。
    - 例：多条"特许寻访「烟火邀星河」（明河）"报道 → 统一 "特许寻访·烟火邀星河（明河）"；汉堡王联动的 PV 与详情帖 → 统一 "汉堡王联动·美味通行堡已就位"。
-7. matchedEntryId（跨动态去重，仅当本游戏已有条目时可填）：下面候选表列出了本游戏历史条目的规范名与时间。
-   - 若你拆出的条目与候选中某条是**同一现实活动/卡池/商品/事件**（同一场活动被另一条动态报道过，或本条动态是对同一活动的补充说明），必须填 "matchedEntryId": 候选的 id，并原样复制候选的 canonicalName。
-   - **候选表中多行共享同一活动专名时（仅版本名前缀、"全新活动"等措辞、系列名不同），它们是同一活动的历史残留，不是多个活动**：选 entryIds 最多的一组填写，不要为它们分别建条目。
+7. matchedEntryId（跨动态去重，仅当本游戏已有条目时可填）：下面候选表列出了本游戏历史条目的专名（已去掉模板词）、规范名与时间。
+   - **新建条目前必须先逐行比对「专名」列**：把你得到的活动专名去模板词后，与候选表每一行做完全相等比对；命中就必须复用该行的 id 与 canonicalName，不得新建。
+   - 同一活动被另一条动态报道过，或本条动态是对同一活动的补充说明 → 必须填 "matchedEntryId": 候选表「同组全部 id」中的任意一个（通常取第一个），并原样复制该行 canonicalName。
+   - **同组全部 id 是同一活动的历史残留，不是多个活动**：不要为它们分别建条目，也不要因为组内 id 多就视为不同活动。
    - 前缀/后缀/措辞差异不影响判断：专名相同即 same-event，例如"烟火生缘"与"「丹青渡」全新活动「烟火生缘」"是同一个活动。
    - 只是名称相似但实际是不同活动（不同赛季、不同批次、不同期数）→ 不要填。
    - 只能匹配 type 相同的候选。
@@ -155,12 +156,12 @@ function candidateBlock(candidates: RecallCandidate[]): string {
   const fmt = (unix: number | undefined): string =>
     unix === undefined ? '—' : fmtCst(unix).slice(0, 10);
   const rows = candidates.map((c) =>
-    `| ${c.entryId} | ${c.type} | ${c.canonicalName} | ${c.title} | ${fmt(c.startAt)} | ${fmt(c.endAt)} |`,
+    `| ${c.entryId} | ${c.type} | ${c.eventKey || c.canonicalName} | ${c.canonicalName} | ${c.entryIds.join(',')} | ${c.title} | ${fmt(c.startAt)} | ${fmt(c.endAt)} |`,
   );
   return [
     '## 本游戏历史条目候选（判定为同一活动时必须复用其 id 与 canonicalName）',
-    '| id | type | canonicalName | 标题 | 开始 | 结束 |',
-    '|---|---|---|---|---|---|',
+    '| id | type | 专名（去模板词） | canonicalName | 同组全部 id | 标题 | 开始 | 结束 |',
+    '|---|---|---|---|---|---|---|---|',
     ...rows,
   ].join('\n');
 }
@@ -248,7 +249,12 @@ function hash36(s: string): string {
 }
 
 /** 校验并规整一条 LLM 输出 → Entry；不合法返回 null（宁缺毋滥） */
-function normalizeEntry(post: StoredPost, raw: RawEntry, candidates: Map<string, RecallCandidate>): Entry | null {
+function normalizeEntry(
+  post: StoredPost,
+  raw: RawEntry,
+  candidates: Map<string, RecallCandidate>,
+  keyIndex: Map<string, RecallCandidate>,
+): Entry | null {
   const type = raw.type;
   const slot = raw.slot ?? raw.type?.toLowerCase();
   const title = raw.title?.trim();
@@ -256,22 +262,35 @@ function normalizeEntry(post: StoredPost, raw: RawEntry, candidates: Map<string,
   if (!VALID_TYPES.includes(type as (typeof VALID_TYPES)[number])) return null;
   if (!VALID_SLOTS.includes(slot as (typeof VALID_SLOTS)[number])) return null;
 
-  // 跨动态去重：命中候选时采纳候选的 id 与规范名，命名不一致不再导致合并失败；
-  // 候选不存在、跨 type、id 不属于候选表 → 降级为新建（只记 warn，不阻塞流水线）
+  // 跨动态去重：命中候选时采纳候选组最早条目的 id 与规范名，命名不一致不再导致合并失败；
+  // 候选不存在、跨 type、id 不属于候选表 → 先按 eventKey 精确兜底，仍未命中才新建。
   let matched: RecallCandidate | undefined;
+  let matchVia: 'llm' | 'exact-key' | undefined;
   if (raw.matchedEntryId) {
     const c = candidates.get(raw.matchedEntryId);
     if (!c) {
-      log.warn('matchedEntryId 不在候选表，降级为新建 postId=%s id=%s', post.id, raw.matchedEntryId);
+      log.warn('matchedEntryId 不在候选表 postId=%s id=%s', post.id, raw.matchedEntryId);
     } else if (c.type !== type) {
-      log.warn('matchedEntryId 跨 type，降级为新建 postId=%s id=%s %s≠%s', post.id, raw.matchedEntryId, c.type, type);
+      log.warn('matchedEntryId 跨 type postId=%s id=%s %s≠%s', post.id, raw.matchedEntryId, c.type, type);
     } else {
       matched = c;
+      matchVia = 'llm';
+    }
+  }
+  // LLM 未填或填错时，按「type + 去模板词专名」完全相等强制复用。
+  // 这是确定性兜底，不做子串/模糊匹配；宁可重复也不漏活动的约束只约束合并键，不放宽匹配范围。
+  if (!matched) {
+    const key = eventKey(raw.canonicalName?.trim() || title, type);
+    const c = key ? keyIndex.get(`${type}\u0000${key}`) : undefined;
+    if (c) {
+      matched = c;
+      matchVia = 'exact-key';
     }
   }
 
-  // canonicalName 必填用于第二阶段跨动态合并；LLM 漏给时以标题兜底，保证字段不缺
-  const canonicalName = matched ? matched.canonicalName : raw.canonicalName?.trim() || title;
+  // canonicalName 必填用于第二阶段跨动态合并；命中候选时复用组内最早条目的规范名，
+  // 确保历史重复条目不会被 LLM 的临时命名继续扩散
+  const canonicalName = matched ? matched.oldestCanonicalName : raw.canonicalName?.trim() || title;
   // category 受游戏词表约束，词表外值归一为"其他"
   const category = normalizeCategory(post.gameId, type as EntryType, raw.category);
 
@@ -307,7 +326,7 @@ function normalizeEntry(post: StoredPost, raw: RawEntry, candidates: Map<string,
     provenance.push({
       fields: ['canonicalName'],
       method: 'merge-id',
-      evidence: `matchedEntryId=${matched.entryId}; reason=${raw.matchReason ?? '未说明'}`,
+      evidence: `via=${matchVia}; matchedEntryId=${raw.matchedEntryId ?? '—'}; resolved=${matched.oldestEntryId}; reason=${raw.matchReason ?? '未说明'}`,
     });
   }
 
@@ -348,7 +367,7 @@ function normalizeEntry(post: StoredPost, raw: RawEntry, candidates: Map<string,
   // 两条路径都保持「同一现实活动跨 post 同 id」，重跑不会换 id
   const slug = hash36(normalizeCanonicalName(canonicalName));
   return {
-    id: matched ? matched.entryId : `${post.gameId}:${type}:${slug}`,
+    id: matched ? matched.oldestEntryId : `${post.gameId}:${type}:${slug}`,
     postId: post.id,
     gameId: post.gameId,
     type: type as EntryType,
@@ -383,7 +402,16 @@ async function processPost(
   post: StoredPost,
   gameNames: Record<string, string>,
   save: boolean,
-): Promise<{ status: 'processed' | 'skipped' | 'failed'; entries: Entry[]; user: string | null; infra?: boolean }> {
+): Promise<{
+  status: 'processed' | 'skipped' | 'failed';
+  entries: Entry[];
+  user: string | null;
+  infra?: boolean;
+  /** 送入 LLM 的 system prompt（含候选表），仅用于探针审计 */
+  system?: string;
+  /** LLM 原始 JSON 输出，仅用于探针审计 */
+  raw?: unknown;
+}> {
   const user = await buildUserContent(post, gameNames[post.gameId] ?? post.gameId);
   if (!user) {
     // 正文与 OCR 均为空，无从结构化：标记跳过避免反复进入队列
@@ -402,20 +430,20 @@ async function processPost(
     // 召回本游戏历史条目作为候选：LLM 若判定为同一活动，复用候选 id 完成跨动态合并
     const candidates = await recallCandidates(post.gameId, haystack);
     const candidateIndex = new Map(candidates.flatMap((c) => c.entryIds.map((id) => [id, c] as const)));
-    const out = (await chatJSON({
-      // 发布时间与当前日期均给北京时间，避免"X天后/本周五"相对推算被 UTC 口径带偏
-      system: systemPrompt(
-        post.gameId,
-        gameNames[post.gameId] ?? post.gameId,
-        fmtCst(post.publishedAt),
-        CST_D.format(Date.now()),
-        candidates,
-      ),
-      user,
-    })) as { items?: RawEntry[] };
+    // eventKey 索引：LLM 未填 matchedEntryId 时的确定性兜底，只做完全相等匹配
+    const keyIndex = new Map(candidates.map((c) => [`${c.type}\u0000${c.eventKey}`, c] as const));
+    // 发布时间与当前日期均给北京时间，避免"X天后/本周五"相对推算被 UTC 口径带偏
+    const system = systemPrompt(
+      post.gameId,
+      gameNames[post.gameId] ?? post.gameId,
+      fmtCst(post.publishedAt),
+      CST_D.format(Date.now()),
+      candidates,
+    );
+    const out = (await chatJSON({ system, user })) as { items?: RawEntry[] };
 
     const entries = (Array.isArray(out.items) ? out.items : [])
-      .map((raw) => normalizeEntry(post, raw, candidateIndex))
+      .map((raw) => normalizeEntry(post, raw, candidateIndex, keyIndex))
       .filter((e): e is Entry => e !== null);
     if (save) {
       await replaceEntriesForPost(post.id, entries);
@@ -425,7 +453,7 @@ async function processPost(
       '结构化完成 postId=%s entries=%d types=%s',
       post.id, entries.length, entries.map((e) => e.type).join(',') || '-',
     );
-    return { status: 'processed', entries, user };
+    return { status: 'processed', entries, user, system, raw: out };
   } catch (e) {
     const isInfra = e instanceof LlmInfraError;
     if (save) await markExtractFailure(post.id, (e as Error).message, isInfra);
@@ -507,6 +535,10 @@ export async function extractOnePost(
   status: 'not_found' | 'llm_disabled' | 'processed' | 'skipped' | 'failed';
   user: string | null;
   entries: Entry[];
+  /** 送入 LLM 的 system prompt（含候选表），仅用于探针审计 */
+  system?: string;
+  /** LLM 原始 JSON 输出，仅用于探针审计 */
+  raw?: unknown;
 }> {
   if (!llmEnabled()) {
     log.warn('LLM 未配置（LLM_BASE_URL / LLM_MODEL）');
@@ -520,7 +552,7 @@ export async function extractOnePost(
   // 与 scheduler 一致，用预置清单里的中文名组装上下文
   const gameNames = Object.fromEntries(GAMES.map((g) => [g.id, g.name]));
   const r = await processPost(post, gameNames, opts.save === true);
-  return { status: r.status, user: r.user, entries: r.entries };
+  return { status: r.status, user: r.user, entries: r.entries, system: r.system, raw: r.raw };
 }
 
 /** 按条件查一条动态：优先 postId；否则 gameId+titleLike 取发布时间最新 */

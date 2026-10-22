@@ -1,5 +1,5 @@
 import * as jieba from 'jieba-node';
-import { normalizeCanonicalName } from '../core/types.js';
+import { eventKey } from '../core/types.js';
 import { listEntriesByGame, type StoredEntry } from '../storage/store.js';
 import { moduleLogger } from '../core/logger.js';
 
@@ -17,8 +17,8 @@ const log = moduleLogger('recall');
  * - 归一化只用于归组与 id 生成，展示保留 LLM 原始命名。
  */
 
-/** 候选归组上限：多活动长图（一张前瞻图含十余个活动）需要更大候选池；每组可能含多条历史重复条目 */
-const MAX_CANDIDATES = 40;
+/** 候选归组上限：给同专名的全部历史变体留出空间，宁多勿漏 */
+const MAX_CANDIDATES = 100;
 /** 字段权重：canonicalName 是活动身份的唯一稳定载体，命中它比命中描述更有判别力 */
 const FIELD_WEIGHT: Record<'canonicalName' | 'title' | 'summary' | 'tags', number> = {
   canonicalName: 3,
@@ -41,14 +41,20 @@ const STOP_WORDS = new Set([
   '前往', '购买', '兑换', '累计', '每日', '指定', '阶段', '第一', '第二',
 ]);
 
-/** 候选组：同一规范名的多条历史条目合并为一条候选，id 列表供 LLM 指定 */
+/** 候选组：同一 eventKey 的多条历史条目合并为一条候选，id 列表供 LLM 指定 */
 export interface RecallCandidate {
-  /** 组内得分最高条目的 id，作为匹配目标 */
+  /** 组内得分最高条目的 id，作为展示与匹配入口 */
   entryId: string;
+  /** 组内最早入库的条目 id：命中组内任一 id 时统一归并到它，避免锚定新重复 */
+  oldestEntryId: string;
   /** 同组全部条目 id（历史重复条目会归到同一组） */
   entryIds: string[];
   type: string;
+  /** 去模板词后的活动身份键，供 LLM 逐行比对专名 */
+  eventKey: string;
   canonicalName: string;
+  /** 组内最早条目的规范名，命中时原样复用 */
+  oldestCanonicalName: string;
   title: string;
   startAt?: number;
   endAt?: number;
@@ -194,30 +200,58 @@ export async function recallCandidates(gameId: string, text: string): Promise<Re
     .filter((x) => x.s > 0)
     .sort((a, b) => b.s - a.s);
 
-  // 归组：规范名归一化后相同（旧条目无规范名时退回标题归一化）视为同一候选
-  const groups = new Map<string, RecallCandidate>();
-  for (const { d } of ranked) {
+  // 名称命中兜底：帖子文本字面包含某条目的 eventKey 时，必须进入候选池，
+  // 不受 BM25 分数与组数上限影响（长图里低分词条容易被高分候选挤出）。
+  const plainText = stripPunct(text);
+  const nameHit = new Set<Doc>();
+  for (const d of docs) {
+    const key = eventKey(d.entry.payload.canonicalName || d.entry.title, d.entry.type);
+    const compact = key.replace(/[()[\]<>]/g, '');
+    if (compact.length >= 2 && plainText.includes(compact)) nameHit.add(d);
+  }
+  const rankedDocs = ranked.map((x) => x.d);
+  const ordered = [
+    ...rankedDocs.filter((d) => nameHit.has(d)),
+    ...rankedDocs.filter((d) => !nameHit.has(d)),
+    ...docs.filter((d) => !rankedDocs.includes(d) && nameHit.has(d)),
+  ];
+
+  // 归组：type + eventKey 相同视为同一候选；组内保留全部 id，并记录最早入库条目
+  type InternalCandidate = RecallCandidate & { oldestAt: number };
+  const groups = new Map<string, InternalCandidate>();
+  for (const d of ordered) {
     const p = d.entry.payload;
-    const key = normalizeCanonicalName(p.canonicalName || '') || normalizeCanonicalName(d.entry.title);
-    const existing = groups.get(key);
+    const key = eventKey(p.canonicalName || '', d.entry.type) || eventKey(d.entry.title, d.entry.type);
+    if (!key) continue;
+    const groupKey = `${d.entry.type}\u0000${key}`;
+    const existing = groups.get(groupKey);
     if (existing) {
       existing.entryIds.push(d.entry.id);
+      if (d.entry.firstSeenAt < existing.oldestAt) {
+        existing.oldestAt = d.entry.firstSeenAt;
+        existing.oldestEntryId = d.entry.id;
+        existing.oldestCanonicalName = p.canonicalName || d.entry.title;
+      }
       continue;
     }
     if (groups.size >= MAX_CANDIDATES) break;
-    groups.set(key, {
+    groups.set(groupKey, {
       entryId: d.entry.id,
+      oldestEntryId: d.entry.id,
       entryIds: [d.entry.id],
       type: d.entry.type,
+      eventKey: key,
       canonicalName: p.canonicalName || d.entry.title,
+      oldestCanonicalName: p.canonicalName || d.entry.title,
       title: d.entry.title,
       startAt: d.entry.startAt,
       endAt: d.entry.endAt,
+      oldestAt: d.entry.firstSeenAt,
     });
   }
 
-  const out = [...groups.values()];
-  log.debug('召回 gameId=%s 条目=%d 查询词=%d 候选组=%d', gameId, N, queryTerms.length, out.length);
+  const out = [...groups.values()].map(({ oldestAt: _oldestAt, ...c }) => c);
+  log.debug('召回 gameId=%s 条目=%d 查询词=%d 名称命中=%d 候选组=%d', gameId, N, queryTerms.length, nameHit.size, out.length);
   return out;
 }
 

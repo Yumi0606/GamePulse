@@ -3,12 +3,14 @@
  * 合并了旧的 test_one / verify_posts / run_extract_one。
  *
  * 用法：
- *   node _research/llm_probe/run_one.mjs --post <postId> [--post <postId2>] [--context]
+ *   node _research/llm_probe/run_one.mjs --post <postId> [--post <postId2>] [--context] [--system] [--raw]
  *   node _research/llm_probe/run_one.mjs --post <postId> --save
  *   node _research/llm_probe/run_one.mjs --game endfield --title 关键词 [--context]
  *
  * 说明：
  *   --context  打印完整喂给 LLM 的上下文（仅单条时有效）。
+ *   --system   打印送入 LLM 的 system prompt（含召回候选表），审计召回与匹配用。
+ *   --raw      打印 LLM 原始 JSON 输出，审计规整前的 matchedEntryId / canonicalName。
  *   --save     结果入库（默认 dry-run，不消耗幂等状态）。
  * 需先 pnpm build，并在 .env 配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL。
  */
@@ -32,6 +34,9 @@ const gameId = flag('game');
 const titleLike = flag('title');
 const save = has('save');
 const showContext = has('context');
+/** 审计用：打印送入 LLM 的 system prompt（含候选表）与原始 JSON 输出 */
+const showSystem = has('system');
+const showRaw = has('raw');
 
 if (postIds.length === 0 && !(gameId && titleLike)) {
   console.error('用法：node run_one.mjs --post <postId> [--post ...] [--save] [--context]');
@@ -60,6 +65,16 @@ for (const postId of targets) {
     console.log('---------- 喂给 LLM 的上下文 ----------');
     console.log(r.user);
     console.log('---------------------------------------');
+  }
+  if (showSystem && r.system) {
+    console.log('---------- 送入 LLM 的 system prompt ----------');
+    console.log(r.system);
+    console.log('-----------------------------------------------');
+  }
+  if (showRaw && r.raw) {
+    console.log('---------- LLM 原始输出 ----------');
+    console.log(JSON.stringify(r.raw, null, 2));
+    console.log('----------------------------------');
   }
   if (r.entries.length === 0) {
     console.log('(无条目：预过滤跳过或 LLM 判定无排期信息)');

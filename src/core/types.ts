@@ -186,3 +186,80 @@ export function normalizeCanonicalName(name: string | undefined): string {
       return map[ch] ?? ch;
     });
 }
+
+/**
+ * 固定模板词：LLM 常在专名前后附加这些运营用语（如「挑战活动·百趣演武」）。
+ * 只做首尾剥除，不按子串匹配；剥除后剩余部分必须完全相等才视为同一活动。
+ * 顺序按长度降序，保证「新区域开放」先于「新区域」、「赛季轮换」先于「赛季」。
+ */
+const TEMPLATE_TOKENS = [
+  '新区域开放', '赛季轮换', '挑战活动', '限时活动', '趣味活动',
+  '叙事活动', '拍照活动', '引入活动', '武库申领', '新区域',
+  '开放', '赛季', '活动',
+] as const;
+
+/**
+ * 公告类专名的通用后缀：公告标题常把「X 正式上线（新增网页版）」写成完整句子。
+ * 仅 ANNOUNCEMENT 类型启用，避免把活动名里的「上线」误当装饰。
+ */
+const ANNOUNCEMENT_TOKENS = [
+  '(新增网页版)', '（新增网页版）', '官方云游戏上线', '正式上线', '新增网页版',
+] as const;
+
+/** 首尾装饰字符：分隔符、引号残留、空白 */
+const EDGE_DECOR = /^[\s·・•\-—–_/\\|,.;!?]+|[\s·・•\-—–_/\\|,.;!?]+$/g;
+
+/** 去掉首尾装饰，以及整体包裹的 [] / <>（「」《》归一化后的形态） */
+function trimEdge(s: string): string {
+  let out = s.trim();
+  for (let i = 0; i < 8; i++) {
+    const before = out;
+    out = out.replace(EDGE_DECOR, '').trim();
+    if (
+      (out.startsWith('[') && out.endsWith(']')) ||
+      (out.startsWith('<') && out.endsWith('>'))
+    ) {
+      out = out.slice(1, -1).trim();
+    }
+    if (out === before) break;
+  }
+  return out;
+}
+
+/**
+ * 活动身份键：在 normalizeCanonicalName 基础上再去掉首尾模板词与分隔符。
+ *
+ * 用途仅限“同一活动”的确定性判定：两个名称的 eventKey 完全相等才合并。
+ * 不做子串包含、编辑距离或模糊匹配，避免把不同活动误合并。
+ * 地区/版本限定的变体（如「丹青渡」新区域「武陵-祀的画」）不会收敛到「祀的画」，
+ * 这是有意保留的边界。
+ */
+export function eventKey(name: string | undefined, type?: string): string {
+  let out = normalizeCanonicalName(name);
+  if (!out) return '';
+  // 分隔符不承载专名信息，「战争回响·异想」与「战争回响 异想」应同键
+  out = out.replace(/[\s·・•\-—–_/\\|]+/g, '');
+  out = trimEdge(out);
+  const tokens =
+    type === 'ANNOUNCEMENT'
+      ? [...ANNOUNCEMENT_TOKENS, ...TEMPLATE_TOKENS]
+      : TEMPLATE_TOKENS;
+  for (let guard = 0; guard < 8; guard++) {
+    out = trimEdge(out);
+    let changed = false;
+    for (const token of tokens) {
+      if (out.startsWith(token)) {
+        out = trimEdge(out.slice(token.length));
+        changed = true;
+        break;
+      }
+      if (out.endsWith(token)) {
+        out = trimEdge(out.slice(0, -token.length));
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+  return out;
+}
