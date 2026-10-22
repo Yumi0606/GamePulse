@@ -8,11 +8,13 @@
     "build": "tsc -p tsconfig.json",
     "sync": "tsx src/index.ts",
     "ocr": "node ocr-service/start.js",
-    "web": "tsx src/web/server.ts"
+    "web": "tsx src/web/server.ts",
+    "viewonly": "tsx src/web/server.ts --view-only"
   },
   "dependencies": {
     "cron": "^4.4.0",
     "fast-xml-parser": "^4.5.0",
+    "jieba-node": "^1.0.1",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3"
   },

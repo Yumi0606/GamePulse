@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import type { Entry, Item } from '../core/types.js';
+import type { Entry, EntryPayload, Item } from '../core/types.js';
+import { normalizeCanonicalName } from '../core/types.js';
 import { normalizeImageUrl } from '../core/imageUrl.js';
 import { moduleLogger } from '../core/logger.js';
 
@@ -717,24 +718,121 @@ export async function markExtractFailure(postId: string, error: string, infra = 
 }
 
 /**
- * 用一批新条目整体替换某动态的 LLM 结构化产物（事务）：
- * 重建语义——动态内容变化后旧拆分可能失效（如文案删掉了卡池信息），全删全插保持一致。
+ * 用一批新条目替换某动态的 LLM 结构化产物并跨动态合并（事务）。
+ *
+ * 合并语义（同一现实活动由多条动态报道时聚合为一条 entry）：
+ * 1. 从所有现有 entry 的 payload.extra.postIds 中移除该 post；postIds 变空则删除该 entry。
+ *    这样无论 canonicalName 是否变化、无论重跑哪个 post，旧关联都会被清理。
+ * 2. 对每条新 entry，按 id（= gameId:type:hash(normalize(canonicalName))）查找现有 entry：
+ *    - 命中 → 字段级合并（时间取并集，文本取最新，category/tags 去重并集），postIds 追加该 post。
+ *    - 未命中 → 新建。
+ * 3. 主来源 postId 取 postIds 中 publishedAt 最早的动态。
  */
 export async function replaceEntriesForPost(postId: string, entries: Entry[]): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
   const ins = db.prepare(`
     INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, payload, first_seen_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      post_id = excluded.post_id, title = excluded.title, url = excluded.url,
+      published_at = excluded.published_at, start_at = excluded.start_at, end_at = excluded.end_at,
+      payload = excluded.payload, updated_at = excluded.updated_at
   `);
-  const now = Math.floor(Date.now() / 1000);
+  const delOne = db.prepare('DELETE FROM entries WHERE id = ?');
+  const updPayload = db.prepare('UPDATE entries SET payload = ?, updated_at = ? WHERE id = ?');
+  const selOne = db.prepare('SELECT * FROM entries WHERE id = ?');
+
   db.exec('BEGIN');
   try {
-    db.prepare('DELETE FROM entries WHERE post_id = ?').run(postId);
+    // 1. 从所有现有 entry 的 postIds 中移除该 post；变空则删
+    //    旧条目（重构前产出）没有 postIds，退回用 post_id 列判定归属
+    const allRows = db.prepare('SELECT id, post_id, payload FROM entries').all() as unknown as
+      { id: string; post_id: string | null; payload: string }[];
+    for (const row of allRows) {
+      const payload = JSON.parse(row.payload) as EntryPayload;
+      const rawPostIds = payload.extra?.postIds;
+      const oldPostIds = rawPostIds && rawPostIds.length > 0
+        ? rawPostIds
+        : row.post_id ? [row.post_id] : [];
+      const newPostIds = oldPostIds.filter((id) => id !== postId);
+      if (newPostIds.length === 0 && oldPostIds.length > 0) {
+        delOne.run(row.id);
+      } else if (newPostIds.length !== oldPostIds.length) {
+        payload.extra = { ...payload.extra, postIds: newPostIds };
+        updPayload.run(JSON.stringify(payload), now, row.id);
+      }
+    }
+
+    // 2. 逐条新 entry 按 id 合并或插入
+    //    同一规范名只允许存在一个 id：若库里已有同 game+type+规范化 canonicalName
+    //    但 id 不同的条目（旧格式 id 被 LLM 匹配后保留下来的典型情形），并入旧条目并删除多余行
+    const rowsById = new Map<string, EntryRow>();
+    for (const r of db.prepare('SELECT * FROM entries').all() as unknown as EntryRow[]) rowsById.set(r.id, r);
+    const sameKey = (a: string | undefined, b: string | undefined): boolean => {
+      const ka = normalizeCanonicalName(a);
+      const kb = normalizeCanonicalName(b);
+      return ka !== '' && ka === kb;
+    };
+    /** 收集同 game+type+规范化规范名、但 id 与 row 不同的全部条目 */
+    const collectSameKey = (row: EntryRow, type: string): EntryRow[] => {
+      const out: EntryRow[] = [];
+      const rp = JSON.parse(row.payload) as EntryPayload;
+      for (const other of rowsById.values()) {
+        if (other.id === row.id) continue;
+        if (other.game_id !== row.game_id || other.type !== type) continue;
+        const op = JSON.parse(other.payload) as EntryPayload;
+        if (sameKey(op.canonicalName, rp.canonicalName)) out.push(other);
+      }
+      return out;
+    };
+
     for (const e of entries) {
+      const existing = selOne.get(e.id) as unknown as EntryRow | undefined;
+      let target: EntryRow | undefined = existing;
+      let merged: Entry = existing ? mergeEntry(rowToEntry(existing), e) : e;
+
+      // 规范名撞车：把结果并入已存在的同键条目（保留其 id 与首次入库时间），删除多余行
+      const asRow = { id: e.id, game_id: e.gameId, type: e.type, payload: JSON.stringify(merged.payload) } as EntryRow;
+      const twins = collectSameKey(asRow, e.type);
+      if (twins.length > 0) {
+        twins.sort((a, b) => a.first_seen_at - b.first_seen_at);
+        const base = twins[0];
+        // 被删行的来源必须并入保留行，否则清理时会误删其他动态的关联
+        const carry: string[] = [];
+        for (const t of twins) {
+          const tp = JSON.parse(t.payload) as EntryPayload;
+          const ids = tp.extra?.postIds && tp.extra.postIds.length > 0
+            ? tp.extra.postIds
+            : t.post_id ? [t.post_id] : [];
+          carry.push(...ids);
+        }
+        for (const t of twins.slice(1)) {
+          delOne.run(t.id);
+          rowsById.delete(t.id);
+        }
+        if (existing && existing.id !== base.id) {
+          delOne.run(existing.id);
+          rowsById.delete(existing.id);
+        }
+        merged = mergeEntry(rowToEntry(base), { ...merged, id: base.id });
+        const ownIds = merged.payload.extra?.postIds ?? [];
+        merged.payload.extra = {
+          ...merged.payload.extra,
+          postIds: [...new Set([...ownIds, ...carry])],
+        };
+        target = base;
+      }
+
+      const firstSeen = target?.first_seen_at ?? now;
       ins.run(
-        e.id, e.postId ?? null, e.gameId, e.type, e.source, e.sourceId, e.title,
-        e.url ?? null, e.publishedAt ?? null, e.startAt ?? null, e.endAt ?? null,
-        JSON.stringify(e.payload), now, now,
+        merged.id, merged.postId ?? null, merged.gameId, merged.type, merged.source, merged.sourceId,
+        merged.title, merged.url ?? null, merged.publishedAt ?? null, merged.startAt ?? null, merged.endAt ?? null,
+        JSON.stringify(merged.payload), firstSeen, now,
       );
+      rowsById.set(merged.id, {
+        ...(target ?? ({} as EntryRow)),
+        id: merged.id, game_id: merged.gameId, type: merged.type, payload: JSON.stringify(merged.payload),
+      } as EntryRow);
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -743,11 +841,91 @@ export async function replaceEntriesForPost(postId: string, entries: Entry[]): P
   }
 }
 
+/**
+ * 合并两条同 canonicalName 的 entry：时间字段以本次重跑结果为准（本次无值则保留旧值），
+ * 文本字段取发布时间最新的，category/tags 去重并集，postIds 合并去重，
+ * 主来源 postId 取 publishedAt 最早的动态。
+ *
+ * 时间取值不比较 confidence：confidence 是 LLM 自评，历史合并后取过 max 会形成单调壁垒，
+ * 使修正后的时间无法写入。重跑本身就是显式的修正动作，本次给了值就应当覆盖。
+ */
+function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
+  const ex = existing.payload;
+  const inc = incoming.payload;
+
+  const pickTime = (a: number | undefined, b: number | undefined): number | undefined => b ?? a;
+
+  const startAt = pickTime(existing.startAt, incoming.startAt);
+  const endAt = pickTime(existing.endAt, incoming.endAt);
+  const rewardEndAt = pickTime(ex.rewardEndAt, inc.rewardEndAt);
+
+  // 分段取并集，按开始时间排序并重排 index
+  const phases = [...(ex.phases ?? []), ...(inc.phases ?? [])]
+    .sort((a, b) => (a.startAt ?? 0) - (b.startAt ?? 0))
+    .map((p, i) => ({ ...p, index: i + 1 }));
+
+  const useIncoming = (incoming.publishedAt ?? 0) >= (existing.publishedAt ?? 0);
+  const pickText = <T>(a: T | undefined, b: T | undefined): T | undefined =>
+    useIncoming ? (b ?? a) : (a ?? b);
+
+  const existingPostIds = ex.extra?.postIds ?? (existing.postId ? [existing.postId] : []);
+  const postIds = [...new Set([...existingPostIds, ...(incoming.postId ? [incoming.postId] : [])])];
+  // 主来源取 publishedAt 最早的：existing.postId 已是之前合并后的最早来源，
+  // 与 incoming.postId 比较取较小者
+  const mergedPostId =
+    (existing.publishedAt ?? Infinity) <= (incoming.publishedAt ?? Infinity)
+      ? existing.postId
+      : incoming.postId;
+
+  const categories = [ex.category, inc.category].filter(Boolean) as string[];
+  const tags = [...new Set([...(ex.tags ?? []), ...(inc.tags ?? [])])];
+
+  const payload: EntryPayload = {
+    summary: pickText(ex.summary, inc.summary),
+    description: pickText(ex.description, inc.description),
+    category: categories[0],
+    // 旧条目（重构前产出）没有 canonicalName，合并时用新条目补齐，否则失去合并依据
+    canonicalName: ex.canonicalName || inc.canonicalName,
+    banner: pickText(ex.banner, inc.banner),
+    tags: tags.length > 0 ? tags : undefined,
+    startRef: pickText(ex.startRef, inc.startRef),
+    endRef: pickText(ex.endRef, inc.endRef),
+    rewardEndAt,
+    phases: phases.length > 0 ? phases : undefined,
+    estimated: ex.estimated || inc.estimated,
+    // 取本次结果的置信度：与时间取值保持一致，不再累积 max（否则形成只升不降的壁垒）
+    confidence: inc.confidence,
+    provenance: [...(ex.provenance ?? []), ...(inc.provenance ?? [])],
+    extra: { ...ex.extra, ...inc.extra, postIds },
+  };
+
+  return {
+    id: existing.id,
+    postId: mergedPostId,
+    gameId: existing.gameId,
+    type: existing.type,
+    source: existing.source,
+    sourceId: existing.sourceId,
+    title: pickText(existing.title, incoming.title) ?? existing.title,
+    url: pickText(existing.url, incoming.url),
+    publishedAt: Math.max(existing.publishedAt ?? 0, incoming.publishedAt ?? 0),
+    startAt,
+    endAt,
+    payload,
+  };
+}
+
 /** 读取全量结构化条目（按结束时间升序，NULL 排最后） */
 export async function loadEntries(): Promise<StoredEntry[]> {
   const rows = db.prepare(`
     SELECT * FROM entries
     ORDER BY (end_at IS NULL), end_at, published_at DESC
   `).all() as unknown as EntryRow[];
+  return rows.map(rowToEntry);
+}
+
+/** 读取单个游戏的全部条目（供跨动态召回候选） */
+export async function listEntriesByGame(gameId: string): Promise<StoredEntry[]> {
+  const rows = db.prepare('SELECT * FROM entries WHERE game_id = ?').all(gameId) as unknown as EntryRow[];
   return rows.map(rowToEntry);
 }

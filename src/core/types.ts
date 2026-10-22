@@ -156,5 +156,33 @@ export interface EntryPayload {
   /** 字段溯源（调研报告 §4 ExtractRecord：fields=被提取的字段） */
   provenance?: { fields: string[]; method: string; evidence?: string }[];
   /** 其余未归类字段 */
-  extra?: Record<string, unknown>;
+  extra?: EntryExtra;
+}
+
+/** entries.payload.extra 的演化面结构：跨 post 合并后多来源追溯等信息存于此 */
+export interface EntryExtra {
+  /** 合并后该条目关联的所有来源动态 id（posts.id），按发布时间升序；单来源时也存 */
+  postIds?: string[];
+  [key: string]: unknown;
+}
+
+/**
+ * 归一化 canonicalName 作为跨 post 合并键：
+ * 去首尾空白、压缩内部连续空白、统一全半角标点（全角→半角）。
+ * 只用于合并匹配与 id 生成，展示仍用 LLM 原始值。
+ */
+export function normalizeCanonicalName(name: string | undefined): string {
+  if (!name) return '';
+  return name
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[，。！？、；：（）【】「」『』《》]/g, (ch) => {
+      const map: Record<string, string> = {
+        '，': ',', '。': '.', '！': '!', '？': '?', '、': ',',
+        '；': ';', '：': ':', '（': '(', '）': ')', '【': '[',
+        '】': ']', '「': '[', '」': ']', '『': '[', '』': ']',
+        '《': '<', '》': '>',
+      };
+      return map[ch] ?? ch;
+    });
 }

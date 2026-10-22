@@ -56,8 +56,9 @@ export async function recognizeImage(imageUrl: string): Promise<OcrOutcome> {
     throw new OcrInfraError('OCR 响应非 JSON');
   }
   const lines = data.lines ?? [];
-  // 过滤噪声：单字符行（装饰图标误识）、纯数字行（页面编号）
-  const kept = lines.filter((l) => l.length > 1 && !/^\d+$/.test(l.trim()));
+  // 过滤噪声：单字符行（装饰图标误识）、纯数字行（页面编号）；
+  // 保留空行——空行是侧车按版面块插入的分隔符，LLM 据此区分不同卡片块。
+  const kept = lines.filter((l) => l === '' || (l.length > 1 && !/^\d+$/.test(l.trim())));
   return { imageUrl, text: kept.join('\n') };
 }
 

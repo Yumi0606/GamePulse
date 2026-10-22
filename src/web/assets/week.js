@@ -414,7 +414,8 @@
       // Shift+滚轮：缩放精度
       e.preventDefault();
       var idx = PRECISION_INDEX[state.precision];
-      var next = e.deltaY < 0 ? Math.min(idx + 1, PRECISIONS.length - 1) : Math.max(idx - 1, 0);
+      // 向上滚动（deltaY<0）粒度变小（月→周→天→小时），向下滚动粒度变大
+      var next = e.deltaY < 0 ? Math.max(idx - 1, 0) : Math.min(idx + 1, PRECISIONS.length - 1);
       if (next !== idx) setPrecision(PRECISIONS[next].key);
     } else if (e.ctrlKey || e.metaKey) {
       // Ctrl/Cmd+滚轮：缩放行高

@@ -35,6 +35,8 @@ const log = moduleLogger('web');
  * 数据只读本地存储（data/feed.db），新鲜度由定时任务保证；请求不实时拉取。
  */
 const PORT = Number(process.env.PORT ?? 3000);
+/** 只读模式：命令行传入 --view-only，或环境变量 WEB_ONLY=1；不启动定时拉取与处理链 */
+const VIEW_ONLY = process.argv.includes('--view-only') || process.env.WEB_ONLY === '1';
 const BASE = `http://localhost:${PORT}`;
 
 // 静态资源从源码目录读取：tsc 不拷贝 .js/.css，故运行时不依赖 dist。
@@ -171,6 +173,11 @@ server.listen(PORT, () => {
   log.info('Web 服务已启动 port=%d', PORT);
   log.info('页面: GET / 列表视图 | GET /calendar?month=YYYY-MM 日历视图 | GET /week?from=YYYY-MM-DD 周视图 | GET /health 源健康');
   log.info('RSS: /rss/posts 原始动态 | /rss/entries 结构化条目（均可追加 /<gameId>）| /rss/post?id= 与 /rss/entry?id= 单条');
-  // 启动定时拉取：立即执行一次，之后按间隔刷新本地存储
-  startScheduler();
+  // 启动定时拉取：立即执行一次，之后按间隔刷新本地存储。
+  // 只读模式（pnpm viewonly 或 WEB_ONLY=1）：只展示本地存储，不拉取、不跑 OCR/LLM。
+  if (VIEW_ONLY) {
+    log.info('只读模式：跳过定时拉取与处理链，仅展示本地数据');
+  } else {
+    startScheduler();
+  }
 });

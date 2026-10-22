@@ -14,6 +14,9 @@ importers:
       fast-xml-parser:
         specifier: ^4.5.0
         version: 4.5.7
+      jieba-node:
+        specifier: ^1.0.1
+        version: 1.0.1
       pino:
         specifier: ^10.3.1
         version: 10.3.1
@@ -237,6 +240,11 @@ packages:
 
   help-me@5.0.0:
     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
+
+  jieba-node@1.0.1:
+    resolution: {integrity: sha512-gjijhMbpkrquujskc2x+jkCRz4EgQmVutUL9Kuz5lUMcX02aQ6HDKi5fAnd1pmR8pkIVLJfnM5ty4oQt2159+w==}
+    engines: {node: '>=16.0.0'}
+    hasBin: true
 
   joycon@3.1.1:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
@@ -471,6 +479,8 @@ snapshots:
     optional: true
 
   help-me@5.0.0: {}
+
+  jieba-node@1.0.1: {}
 
   joycon@3.1.1: {}
 

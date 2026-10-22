@@ -1,12 +1,16 @@
 """OCR 侧车服务：RapidOCR 的 HTTP 封装（选型见《调研报告-OCR选型.md》）。
 
 接口：POST /ocr {"imageUrl": "..."} → {"lines": ["...", ...], "slices": N}
-（原始文本行，噪声过滤在 Node 侧）
+（分块后的文本行：视觉上独立的卡片块之间用空行分隔，噪声过滤在 Node 侧）
 模型常驻内存，CPU 推理；单实例设计，无并发优化需求（调用量：每月新增图片几十张）。
 
 长图处理：长边缩放到检测模型输入上限会导致小字漏检，
 因此对超高图片按 OCR_TILE_MAX_H 纵向切片，逐片识别后按序合并；
 切点在理想位置附近选取行能量最低的空白行，避免切断文字。
+
+版面恢复：利用每行文本的 bbox y 坐标，在全图坐标下按 y 间隙分块，
+块之间插入空行，帮助下游 LLM 区分视觉上独立的活动卡片，
+避免长图中不同卡片的标题与时间在文本流中交错错位。
 """
 
 import io
@@ -73,26 +77,76 @@ def smart_cuts(gray: np.ndarray, max_h: int, band: int) -> list[int]:
 
 
 def recognize_tiles(content: bytes) -> tuple[list[str], int]:
-    """对超高图片切片识别，返回（合并后的文本行，切片数）。"""
+    """对超高图片切片识别，返回（分块后的文本行，切片数）。
+
+    切片识别时保留每行 bbox 坐标并偏移回原图坐标，
+    最后在全图坐标下按 y 间隙分块，块之间插入空行。
+    """
     img = Image.open(io.BytesIO(content))
-    # 高度未超阈值，或超出量不足一个最小尾段（切片无收益），整图识别
+    # 收集所有 (text, y_center, height)，y 统一到原图坐标
+    items: list[tuple[str, float, float]] = []
+
     if img.format not in TILE_FORMATS or img.height < TILE_MAX_H + MIN_TAIL_H:
         result = engine(content)
-        return list(result.txts or []), 1
+        _collect_items(result, items, y_offset=0)
+        slices = 1
+    else:
+        gray = np.asarray(img.convert("L"))
+        cuts = smart_cuts(gray, TILE_MAX_H, TILE_SEARCH_BAND)
+        bounds = [0] + cuts + [img.height]
+        rgb = img.convert("RGB")
+        for i in range(len(bounds) - 1):
+            tile = rgb.crop((0, bounds[i], rgb.width, bounds[i + 1]))
+            buf = io.BytesIO()
+            tile.save(buf, format="PNG")  # 无损编码，避免二次压缩伪影
+            result = engine(buf.getvalue())
+            _collect_items(result, items, y_offset=bounds[i])
+        slices = len(bounds) - 1
+        log.info("长图切片 size=%dx%d slices=%d cuts=%s", img.width, img.height, slices, cuts)
 
-    gray = np.asarray(img.convert("L"))
-    cuts = smart_cuts(gray, TILE_MAX_H, TILE_SEARCH_BAND)
-    bounds = [0] + cuts + [img.height]
-    rgb = img.convert("RGB")
+    lines = _block_by_y_gap(items)
+    return lines, slices
+
+
+def _collect_items(result, items: list[tuple[str, float, float]], y_offset: int) -> None:
+    """从 RapidOCR 结果提取 (text, y_center, height)，y 坐标加上切片偏移量。"""
+    if result is None or not getattr(result, "txts", None):
+        return
+    boxes = getattr(result, "boxes", None)
+    for idx, text in enumerate(result.txts):
+        if boxes is not None and idx < len(boxes):
+            ys = boxes[idx][:, 1]
+            y_center = float(np.mean(ys)) + y_offset
+            height = float(np.max(ys) - np.min(ys))
+        else:
+            # 无坐标时退化为顺序追加，y_center 递增值避免误判为同一块
+            y_center = (items[-1][1] + 1.0) if items else 0.0
+            height = 1.0
+        items.append((text, y_center, height))
+
+
+def _block_by_y_gap(items: list[tuple[str, float, float]]) -> list[str]:
+    """按 y 中心坐标排序，相邻行 y 间隙超过阈值时插入空行分隔块。
+
+    阈值 = max(行高中位数 × 4, 40px)。
+    排版中行间距通常为行高的 1~1.5 倍，卡片间留白为行高的 3 倍以上；
+    取 4 倍行高可区分卡片内标题-描述的较大行距与卡片间的块间距。
+    """
+    if not items:
+        return []
+    items.sort(key=lambda x: x[1])
+    heights = [h for _, _, h in items if h > 0]
+    median_h = float(np.median(heights)) if heights else 0.0
+    threshold = max(median_h * 4.0, 40.0)
+
     lines: list[str] = []
-    for i in range(len(bounds) - 1):
-        tile = rgb.crop((0, bounds[i], rgb.width, bounds[i + 1]))
-        buf = io.BytesIO()
-        tile.save(buf, format="PNG")  # 无损编码，避免二次压缩伪影
-        result = engine(buf.getvalue())
-        lines.extend(list(result.txts or []))
-    log.info("长图切片 size=%dx%d slices=%d cuts=%s", img.width, img.height, len(bounds) - 1, cuts)
-    return lines, len(bounds) - 1
+    prev_y: float | None = None
+    for text, y_center, _ in items:
+        if prev_y is not None and (y_center - prev_y) > threshold:
+            lines.append("")  # 块分隔空行
+        lines.append(text)
+        prev_y = y_center
+    return lines
 
 
 @app.post("/ocr")
