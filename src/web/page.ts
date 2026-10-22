@@ -126,7 +126,7 @@ const STYLE = `
   li[data-game] { position: relative; padding-right: 44px; transition: background-color 0.8s ease; }
   /* 锚点跳转落点短暂高亮，便于确认跳到哪一行 */
   li.flash { background-color: #fff3cd; }
-  .row-links { position: absolute; top: 6px; right: 0; font-size: 12px; }
+  .row-links { position: absolute; top: 6px; right: 0; font-size: 12px; text-align: right; }
   .row-links a { margin-left: 6px; }
   details { margin-top: 4px; }
   summary { cursor: pointer; font-size: 12px; color: #1a5fb4; }
@@ -280,12 +280,14 @@ function postRow(it: StoredPost, ocr: Map<string, OcrRecordView>): string {
   const tip = it.description ? escapeHtml(it.description) : '';
   const imgs = it.images ? ` <span class="imgs">[图 x${it.images.length}]</span>` : '';
   const rssHref = `/rss/post?id=${encodeURIComponent(it.id)}`;
+  // 复制数据库 id（posts.id，重置解析结果时使用）：链接样式，置于 RSS 入口下方
+  const copyLink = `<br><a href="#" class="copy-id" data-id="${attr(it.id, 200)}" title="复制该动态在数据库中的 id">复制ID</a>`;
   const detail = `<details><summary>OCR 文本</summary>
         ${ocrBlock(it.images, ocr)}
       </details>`;
   // 行锚点：供结构化条目"来源动态"跳转与外部深链定位
   const anchorId = `post-${it.id}`;
-  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(it.gameId)}" data-start="${d}" data-end="${d}" data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date" style="width:130px">${fmtCst(it.publishedAt)}</span><span class="tag">${escapeHtml(gameName)}</span><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" title="${tip}">${escapeHtml(it.title)}</a>${imgs}${detail}</li>`;
+  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(it.gameId)}" data-start="${d}" data-end="${d}" data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a>${copyLink}</span><span class="date" style="width:130px">${fmtCst(it.publishedAt)}</span><span class="tag">${escapeHtml(gameName)}</span><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" title="${tip}">${escapeHtml(it.title)}</a>${imgs}${detail}</li>`;
 }
 
 /**
@@ -367,6 +369,41 @@ const FILTER_SCRIPT = `<script>
     ev.preventDefault();
     history.pushState(null, '', hash);
     jumpTo(hash);
+  });
+
+  /**
+   * 复制动态数据库 id（.copy-id 按钮，data-id 携带 posts.id）。
+   * 优先用 Clipboard API；非安全上下文（http 内网访问）回退到隐藏 textarea + execCommand。
+   * 成功后按钮短暂变"已复制"作为反馈，不弹 alert 打断操作。
+   */
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy') ? resolve() : reject(new Error('copy failed')); }
+      catch (e) { reject(e); }
+      finally { document.body.removeChild(ta); }
+    });
+  }
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('a.copy-id') : null;
+    if (!btn) return;
+    ev.preventDefault();
+    var text = btn.getAttribute('data-id') || '';
+    var orig = btn.textContent;
+    copyText(text).then(function () {
+      btn.textContent = '已复制';
+    }, function () {
+      btn.textContent = '复制失败';
+    });
+    setTimeout(function () { btn.textContent = orig; }, 1500);
   });
   // 浏览器前进/后退或外部深链进入时同样按居中定位
   window.addEventListener('hashchange', function () { jumpTo(location.hash); });
