@@ -52,6 +52,9 @@ export interface FetchMeta {
   errors: string[];
 }
 
+/** 待处理队列的排序方向：desc=最新动态优先（常态增量）；asc=最早动态优先（重置后的全量重跑） */
+export type ProcessOrder = 'asc' | 'desc';
+
 /** 待识别图片（posts 与 ocr_records 的差集） */
 export interface PendingImage {
   postId: string;
@@ -428,12 +431,17 @@ export async function upsertPosts(posts: Item[]): Promise<{ added: number; updat
 }
 
 /**
- * 列出待识别图片（按动态发布时间倒序），同一图片只出现一次（同图被多条动态引用时）：
+ * 列出待识别图片（默认按动态发布时间倒序），同一图片只出现一次（同图被多条动态引用时）：
  * - 无记录 → 待识别；
  * - failed 且 attempts < maxAttempts 且已过冷却 → 重试；attempts 达上限 → 放弃（死图）；
  * - 冷却：last_attempted_at 距今不足 cooldownSeconds 的跳过（cooldownSeconds=0 等价于不冷却）。
+ * - order=asc 时最早动态的图片优先，用于重置后的全量重跑。
  */
-export async function listUnrecognizedImages(maxAttempts: number, cooldownSeconds = 0): Promise<PendingImage[]> {
+export async function listUnrecognizedImages(
+  maxAttempts: number,
+  cooldownSeconds = 0,
+  order: ProcessOrder = 'desc',
+): Promise<PendingImage[]> {
   const rows = db.prepare(`
     SELECT j.value AS imageUrl, MIN(p.id) AS postId
     FROM posts p, json_each(p.images) j
@@ -442,7 +450,7 @@ export async function listUnrecognizedImages(maxAttempts: number, cooldownSecond
        OR (o.status = 'failed' AND o.attempts < ?
            AND (o.last_attempted_at IS NULL OR o.last_attempted_at <= ?))
     GROUP BY j.value
-    ORDER BY MAX(p.published_at) DESC
+    ORDER BY MAX(p.published_at) ${order === 'asc' ? 'ASC' : 'DESC'}
   `).all(maxAttempts, Math.floor(Date.now() / 1000) - cooldownSeconds) as unknown as PendingImage[];
   return rows;
 }
@@ -690,7 +698,11 @@ function rowToEntry(row: EntryRow): StoredEntry {
  * - 冷却：extract_last_attempted_at 距今不足 cooldownSeconds 的跳过（0 等价于不冷却），
  *   避免 LLM 服务故障期间按调度间隔反复硬冲。
  */
-export async function listPostsToExtract(maxAttempts: number, cooldownSeconds = 0): Promise<StoredPost[]> {
+export async function listPostsToExtract(
+  maxAttempts: number,
+  cooldownSeconds = 0,
+  order: ProcessOrder = 'desc',
+): Promise<StoredPost[]> {
   // 图片放弃门槛取 OCR 侧的最大尝试次数，与 enrichOcr 的放弃判定保持一致
   const ocrMaxAttempts = Number(process.env.OCR_MAX_ATTEMPTS ?? 3);
   const ocrMax = Number.isFinite(ocrMaxAttempts) && ocrMaxAttempts >= 1 ? ocrMaxAttempts : 3;
@@ -705,7 +717,7 @@ export async function listPostsToExtract(maxAttempts: number, cooldownSeconds = 
            OR (o.status = 'failed' AND o.attempts < ?)
       )
       AND (extract_last_attempted_at IS NULL OR extract_last_attempted_at <= ?)
-    ORDER BY published_at DESC
+    ORDER BY published_at ${order === 'asc' ? 'ASC' : 'DESC'}
   `).all(
     maxAttempts,
     ocrMax,
@@ -863,6 +875,28 @@ export async function replaceEntriesForPost(postId: string, entries: Entry[]): P
   }
 }
 
+/** 维护语义关键字：带这类字样的引用可由维护窗口回填为精确时刻 */
+const MAINTENANCE_REF_RE = /维护|更新|版本|停服|闪断|开服/;
+
+/**
+ * 时间值精度分类，只用于合并时阻止粗略值覆盖精确值：
+ * - none  ：既无绝对值也无引用；
+ * - exact ：明确绝对值，或引用可（已）锚定到维护窗口；
+ * - rough ：只有纯日期/相对表述的引用，绝对值来自游戏缺省时刻补全，精度低。
+ *
+ * 与 processing/maintenance.ts 的 hasMaintenanceSemantics 同义；
+ * storage 不得依赖 processing，因此在此保留最小判定。
+ */
+function schedulePrecision(
+  at: number | undefined,
+  ref: TimeRef | undefined,
+): 'none' | 'exact' | 'rough' {
+  if (at == null && !ref) return 'none';
+  if (!ref) return 'exact';
+  if (ref.state === 'anchored') return 'exact';
+  return MAINTENANCE_REF_RE.test(ref.refText) ? 'exact' : 'rough';
+}
+
 /**
  * 合并两条同 canonicalName 的 entry：时间字段以本次重跑结果为准（本次无值则保留旧值），
  * 文本字段取发布时间最新的，category/tags 去重并集，postIds 合并去重，
@@ -870,6 +904,9 @@ export async function replaceEntriesForPost(postId: string, entries: Entry[]): P
  *
  * 时间取值不比较 confidence：confidence 是 LLM 自评，历史合并后取过 max 会形成单调壁垒，
  * 使修正后的时间无法写入。重跑本身就是显式的修正动作，本次给了值就应当覆盖。
+ *
+ * 例外是开始时间的精度保护：只有日期/相对表述的粗略开始时间不得覆盖已有的精确开始时间
+ * （明确绝对值或维护窗口锚定值）。广告、提醒类动态常给出这种粗略开始时间。
  */
 function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
   const ex = existing.payload;
@@ -895,7 +932,16 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
     return { at: bAt ?? aAt, ref: undefined };
   };
 
-  const start = pickSchedule(existing.startAt, ex.startRef, incoming.startAt, inc.startRef);
+  // 开始时间精度保护：广告/提醒类动态常给出只有日期或相对表述的粗略开始时间，
+  // 这类值不得覆盖已有的精确开始时间（明确绝对值或维护窗口锚定值）。
+  // 结束时间不在保护范围内：本次未给结束时本就保留旧值。
+  const startProtected =
+    schedulePrecision(incoming.startAt, inc.startRef) === 'rough'
+    && schedulePrecision(existing.startAt, ex.startRef) === 'exact';
+
+  const start = startProtected
+    ? { at: existing.startAt, ref: ex.startRef }
+    : pickSchedule(existing.startAt, ex.startRef, incoming.startAt, inc.startRef);
   const end = pickSchedule(existing.endAt, ex.endRef, incoming.endAt, inc.endRef);
   const startAt = start.at;
   const endAt = end.at;

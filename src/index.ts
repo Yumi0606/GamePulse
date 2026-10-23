@@ -1,7 +1,7 @@
 // 必须最先 import：加载 .env，保证后续 logger/ocr/llm 等模块读到配置
 import './core/env.js';
 import { runFetchOnce } from './scheduler.js';
-import { loadPosts } from './storage/store.js';
+import { loadPosts, type ProcessOrder } from './storage/store.js';
 import { GAMES } from './core/games.js';
 import { fmtCst } from './processing/extract.js';
 import { installFatalHandlers } from './core/logger.js';
@@ -9,11 +9,15 @@ import { installFatalHandlers } from './core/logger.js';
 /**
  * 命令行入口：手动跑一次拉取并落盘（与定时任务同一逻辑），然后打印库存摘要。
  * 定时刷新由 Web 服务内置的调度器负责，本入口用于验证与补拉。
+ *
+ * --order asc：处理队列按发布时间升序（最早优先），用于重置后的全量重跑；
+ * 不带参数时为 desc（最新优先），与定时任务一致。
  */
 async function main(): Promise<void> {
   installFatalHandlers();
-  console.log('手动拉取 %d 款游戏官号动态…', GAMES.length);
-  const meta = await runFetchOnce();
+  const order = parseOrder(process.argv.slice(2));
+  console.log('手动拉取 %d 款游戏官号动态…（处理顺序 %s）', GAMES.length, order);
+  const meta = await runFetchOnce({ order });
 
   if (meta.errors.length > 0) {
     console.log('\n部分游戏拉取失败：');
@@ -51,6 +55,16 @@ async function main(): Promise<void> {
       console.log('  %s  %s%s', date, it.title.slice(0, 50), tag);
     }
   }
+}
+
+/** 解析 --order：asc 表示最早动态优先，缺省 desc 最新优先；非法值直接退出 */
+function parseOrder(argv: string[]): ProcessOrder {
+  const i = argv.indexOf('--order');
+  if (i < 0) return 'desc';
+  const raw = argv[i + 1];
+  if (raw === 'asc' || raw === 'desc') return raw;
+  console.error('--order 只接受 asc 或 desc，收到：%s', raw ?? '（空）');
+  process.exit(1);
 }
 
 main().catch((e) => {

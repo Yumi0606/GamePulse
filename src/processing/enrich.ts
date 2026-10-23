@@ -1,4 +1,4 @@
-import { listUnrecognizedImages, saveOcrFailure, saveOcrRecord } from '../storage/store.js';
+import { listUnrecognizedImages, saveOcrFailure, saveOcrRecord, type ProcessOrder } from '../storage/store.js';
 import { OcrInfraError, recognizeImage } from './ocr.js';
 import { envNum } from '../core/env.js';
 import { moduleLogger } from '../core/logger.js';
@@ -36,8 +36,8 @@ function retryCooldownSeconds(): number {
 /** 连续基础设施失败达该次数即熔断本批剩余（服务大概率挂了，继续只会白等超时） */
 const INFRA_BREAK_STREAK = 3;
 
-/** OCR 富化主流程：清一次待识别积压 */
-export async function enrichOcr(): Promise<{
+/** OCR 富化主流程：清一次待识别积压；order 控制取图顺序，默认最新优先 */
+export async function enrichOcr(order: ProcessOrder = 'desc'): Promise<{
   imagesDone: number;
   imagesFailed: number;
   imagesInfra: number;
@@ -47,8 +47,8 @@ export async function enrichOcr(): Promise<{
   const limit = batchLimit();
   const attempts = maxAttempts();
   const cooldown = retryCooldownSeconds();
-  const pending = await listUnrecognizedImages(attempts, cooldown);
-  log.info('OCR 开始 pendingImages=%d batchLimit=%d maxAttempts=%d cooldown=%ds', pending.length, limit, attempts, cooldown);
+  const pending = await listUnrecognizedImages(attempts, cooldown, order);
+  log.info('OCR 开始 pendingImages=%d batchLimit=%d maxAttempts=%d cooldown=%ds order=%s', pending.length, limit, attempts, cooldown, order);
 
   let imagesDone = 0;
   let imagesFailed = 0;

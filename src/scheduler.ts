@@ -1,5 +1,5 @@
 import { runPipeline } from './sources/pipeline.js';
-import { saveMeta, upsertPosts, type FetchMeta } from './storage/store.js';
+import { saveMeta, upsertPosts, type FetchMeta, type ProcessOrder } from './storage/store.js';
 import { enrichOcr } from './processing/enrich.js';
 import { extractEntries } from './processing/extract.js';
 import {
@@ -104,12 +104,17 @@ function processBudgetSeconds(): number {
   return Math.max(30, envNum('PROCESS_TIME_BUDGET_SECONDS', 480));
 }
 
+/** 处理链选项：order=asc 用于重置后的全量重跑，定时任务不传，保持最新优先 */
+export interface ProcessOptions {
+  order?: ProcessOrder;
+}
+
 /**
  * 跑一轮处理链（清空式循环 + 时间预算，见评审报告 P2-2）：
  * 在时间预算内反复执行"OCR 一小批 → LLM 一小批"，直到两个队列均空、熔断或预算耗尽。
  * OCR/LLM 各自的 BATCH_LIMIT 语义为"每一小批上限"，不再是"每轮上限"。
  */
-export async function runProcessOnce(): Promise<{
+export async function runProcessOnce(options: ProcessOptions = {}): Promise<{
   iterations: number;
   imagesDone: number;
   imagesFailed: number;
@@ -120,8 +125,9 @@ export async function runProcessOnce(): Promise<{
   overBudget: boolean;
 }> {
   const gameNames = Object.fromEntries(GAMES.map((g) => [g.id, g.name]));
+  const order: ProcessOrder = options.order ?? 'desc';
   const deadline = Date.now() + processBudgetSeconds() * 1000;
-  log.info('处理链循环开始 budgetSeconds=%d', processBudgetSeconds());
+  log.info('处理链循环开始 budgetSeconds=%d order=%s', processBudgetSeconds(), order);
 
   // 维护窗口先于 LLM：公告原文已在 posts 中，不依赖结构化结果；
   // 先回填一次可让本轮新提取的条目在候选上下文中看到已锚定的时间。
@@ -144,9 +150,9 @@ export async function runProcessOnce(): Promise<{
   do {
     iterations++;
     // 处理链第一步：OCR 一小批（侧车未启动时内部熔断，不阻断）
-    const ocr = await enrichOcr();
+    const ocr = await enrichOcr(order);
     // 处理链第二步：LLM 一小批（未配置 LLM 时内部跳过，不阻断）
-    const llm = await extractEntries(gameNames);
+    const llm = await extractEntries(gameNames, order);
 
     imagesDone += ocr.imagesDone;
     imagesFailed += ocr.imagesFailed;
@@ -184,17 +190,16 @@ export async function runProcessOnce(): Promise<{
   };
 }
 
-/** 跑一次完整拉取并落盘，返回批次统计 */
-export async function runFetchOnce(): Promise<FetchMeta> {
+/** 跑一次完整拉取并落盘，返回批次统计；order 透传给紧接的处理链 */
+export async function runFetchOnce(options: ProcessOptions = {}): Promise<FetchMeta> {
   const startedAt = Date.now();
   log.info('同步开始');
-
   const { items, errors } = await runPipeline();
   const { added, updated } = await upsertPosts(items);
   log.info('库存合并 fetched=%d added=%d updated=%d errors=%d', items.length, added, updated, errors.length);
 
   // 拉取完立即清一轮处理链积压
-  await runProcessOnce();
+  await runProcessOnce(options);
 
   const meta: FetchMeta = {
     lastRunAt: Math.floor(startedAt / 1000),

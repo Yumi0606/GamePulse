@@ -1,6 +1,6 @@
 import type { Entry, EntryPayload, EntryType } from '../core/types.js';
 import { eventKey, normalizeCanonicalName } from '../core/types.js';
-import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type StoredPost } from '../storage/store.js';
+import { loadOcrTexts, loadPosts, listPostsToExtract, markExtractFailure, markExtracted, replaceEntriesForPost, type ProcessOrder, type StoredPost } from '../storage/store.js';
 import { chatJSON, llmConfig, llmEnabled, LlmInfraError } from './llm.js';
 import { gameRuleFor, normalizeCategory } from './gameRules.js';
 import { recallCandidates, type RecallCandidate } from './recall.js';
@@ -451,8 +451,11 @@ async function processPost(
   }
 }
 
-/** LLM 结构化主流程：返回 { processed, skipped, entries, failed } */
-export async function extractEntries(gameNames: Record<string, string>): Promise<{
+/** LLM 结构化主流程：返回 { processed, skipped, entries, failed }；order 控制取动态顺序，默认最新优先 */
+export async function extractEntries(
+  gameNames: Record<string, string>,
+  order: ProcessOrder = 'desc',
+): Promise<{
   processed: number;
   skipped: number;
   entries: number;
@@ -466,10 +469,10 @@ export async function extractEntries(gameNames: Record<string, string>): Promise
   log.info('LLM 结构化开始 model=%s', llmConfig());
 
   const cooldown = RETRY_COOLDOWN();
-  const candidates = await listPostsToExtract(MAX_ATTEMPTS(), cooldown);
+  const candidates = await listPostsToExtract(MAX_ATTEMPTS(), cooldown, order);
   const pending = candidates.slice(0, BATCH_LIMIT());
   const t0 = Date.now();
-  log.info('待结构化动态 pending=%d batchLimit=%d maxAttempts=%d cooldown=%ds', candidates.length, BATCH_LIMIT(), MAX_ATTEMPTS(), cooldown);
+  log.info('待结构化动态 pending=%d batchLimit=%d maxAttempts=%d cooldown=%ds order=%s', candidates.length, BATCH_LIMIT(), MAX_ATTEMPTS(), cooldown, order);
 
   let processed = 0;
   let skipped = 0;
