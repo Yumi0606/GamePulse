@@ -82,7 +82,7 @@ export function renderWeek(entries: StoredEntry[], posts: StoredPost[], fromRaw:
     <button id="w-dir" type="button" title="切换升降序">↑</button>
     <label title="勾选后隐藏已结束的活动行"><input id="w-ended" type="checkbox">仅进行中</label>
     <button id="w-reset" type="button">重置</button>
-    <span class="week-hint">滚轮横向滚动 · Shift+滚轮缩放精度 · Ctrl+滚轮缩放行高 · 拖动平移</span>
+    <span class="week-hint">滚轮横向滚动 · Shift+滚轮纵向滚动 · Ctrl+滚轮缩放精度 · Alt+滚轮缩放行高 · 拖动平移</span>
   </div>
   <div class="gantt-container" id="gantt-container">
     <div class="gantt-timeline" id="gantt-timeline">

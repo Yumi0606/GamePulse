@@ -92,6 +92,7 @@ const STYLE = `
   .tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 3px; background: #eef3fa; color: #1a5fb4; font-size: 12px; }
   .low-conf { color: #c01c28; font-size: 12px; }
   .est { color: #b58100; font-size: 12px; }
+  .ended { color: #999; font-size: 12px; }
   .phases { margin: 2px 0 0 0; padding-left: 18px; font-size: 13px; color: #555; }
   .reward { color: #8a5a00; font-size: 13px; }
   .desc { margin-top: 2px; color: #444; font-size: 13px; }
@@ -133,6 +134,10 @@ const STYLE = `
   .sub { font-size: 12px; color: #888; margin: 6px 0 2px; }
   ul.ocrs { margin: 2px 0; }
   ul.ocrs li { border-bottom: 1px dashed #eee; }
+  /* 多来源列表：每条来源的名称、发布时间与折叠 OCR */
+  ul.sources { margin: 2px 0; }
+  ul.sources > li { border-bottom: 1px dashed #eee; font-size: 13px; }
+  ul.sources .muted { margin-left: 6px; font-size: 12px; }
   ul.provs { margin: 2px 0; }
   ul.provs li { border-bottom: 1px dashed #eee; font-size: 12px; color: #666; }
   .ocr { margin-top: 2px; font-size: 12px; color: #444; white-space: pre-wrap; word-break: break-word; }
@@ -186,15 +191,31 @@ function ocrBlock(images: string[] | undefined, ocr: Map<string, OcrRecordView>)
 }
 
 /**
+ * 证据去重：同一（method, fields 集合）只保留最新一条。
+ * 与存储层 mergeProvenance 同规则，用于消化历史存量里按重跑次数堆叠的证据项。
+ */
+function latestProvenance(
+  list: NonNullable<StoredEntry['payload']['provenance']>,
+): NonNullable<StoredEntry['payload']['provenance']> {
+  const merged = new Map<string, (typeof list)[number]>();
+  for (const p of list) merged.set(`${p.method}|${[...p.fields].sort().join(',')}`, p);
+  return [...merged.values()];
+}
+
+/**
  * 结构化条目单行：时间 + 大类标签 + 标题 + 置信/预估标注 + 引用型时间。
  * 行上挂 data-* 供内联脚本筛选；标题行右上角固定单条 RSS 链接；
- * <details> 原地展开"数据详情"（条目说明 + 分类/标签 + 条件性 LLM 证据 + 来源动态 + 其 OCR 文本）。
+ * <details> 原地展开"数据详情"（发布时间 + 条目说明 + 分类/标签 + 条件性 LLM 证据 + 全部来源动态及其折叠 OCR）。
  */
 function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<string, OcrRecordView>): string {
   const fmt = (unix?: number): string => (unix ? fmtCst(unix) : '—');
   const gameName = GAMES.find((g) => g.id === e.gameId)?.name ?? e.gameId;
   const label = ENTRY_TYPE_LABEL[e.type as EntryType] ?? e.type;
   const est = e.payload.estimated ? ' <span class="est">预估</span>' : '';
+  // 已结束标记：结束时间早于当前时刻；排序不再按状态分组，混排时靠该标记辨识
+  const endedMark = e.endAt !== undefined && e.endAt < Math.floor(Date.now() / 1000)
+    ? ' <span class="ended">已结束</span>'
+    : '';
   const conf = e.payload.confidence < 0.7 ? ` <span class="low-conf">置信 ${e.payload.confidence.toFixed(1)}</span>` : '';
   const startRef = e.payload.startRef ? `（始：${escapeHtml(e.payload.startRef.refText)}）` : '';
   const endRef = e.payload.endRef ? `（${escapeHtml(e.payload.endRef.refText)}）` : '';
@@ -219,9 +240,14 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
   const dStart = e.startAt !== undefined ? fmtCstDate(e.startAt) : '';
   const dEnd = e.endAt !== undefined ? fmtCstDate(e.endAt) : '';
 
-  // 数据详情：条目说明（description）+ 分类/标签 + 条件性 LLM 证据 + 来源动态 + 其 OCR 文本；标题行右上角固定单条 RSS 链接
-  const srcPost = e.postId ? postById.get(e.postId) : undefined;
+  // 数据详情：发布时间 + 条目说明（description）+ 分类/标签 + 条件性 LLM 证据 + 全部来源动态及各自 OCR；
+  // 标题行右上角固定单条 RSS 链接
   const rssHref = `/rss/entry?id=${encodeURIComponent(e.id)}`;
+  // 发布时间：继承来源动态的入库发布时间；多来源时取最新一条来源的发布时间
+  const pubBlock = e.publishedAt !== undefined
+    ? `<div class="sub">发布时间</div>
+        <div class="desc">${fmtCst(e.publishedAt)}</div>`
+    : '';
   // 详情内的小节统一为 .sub（标签）+ .desc（正文），与"条目说明"保持一致
   const descBlock = e.payload.description
     ? `<div class="sub">条目说明</div>
@@ -237,15 +263,30 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
     ? `<div class="sub">标签</div>
         <div class="desc">${e.payload.tags.map((t) => `#${escapeHtml(t)}`).join(' ')}</div>`
     : '';
-  // 来源动态：指认本条目由哪条原始动态产生；有来源时给出跳转到该动态行的锚点链接
-  const srcBlock = srcPost
-    ? `<div class="sub">来源动态</div>
-        <div class="desc"><a href="#post-${encodeURIComponent(srcPost.id)}">${escapeHtml(srcPost.title)}</a></div>`
+  // 来源动态：展开全部合并来源（payload.extra.postIds），每条给出发布时间、锚点链接与默认折叠的 OCR 文本；
+  // 旧条目没有 postIds 时退回主来源 postId
+  const sourceIds = e.payload.extra?.postIds?.length
+    ? e.payload.extra.postIds
+    : e.postId ? [e.postId] : [];
+  const sources = sourceIds
+    .map((id) => ({ id, post: postById.get(id) }))
+    .filter((s): s is { id: string; post: StoredPost } => s.post !== undefined);
+  const missingSources = sourceIds.length - sources.length;
+  const srcBlock = sourceIds.length > 0
+    ? `<div class="sub">来源动态（${sourceIds.length}）</div>
+        <ul class="sources">${sources.map(({ id, post }) => `<li>
+          <a href="#post-${encodeURIComponent(id)}">${escapeHtml(post.title)}</a>
+          <span class="muted">发布于 ${fmtCst(post.publishedAt)}</span>
+          <details><summary>OCR 文本（${post.images?.length ?? 0} 张图）</summary>${ocrBlock(post.images, ocr)}</details>
+        </li>`).join('')}</ul>${missingSources > 0
+          ? `<div class="desc muted">另有 ${missingSources} 条来源动态不在当前动态列表中</div>`
+          : ''}`
     : `<div class="sub">来源动态</div>
         <div class="desc">无关联动态</div>`;
   // LLM 证据：仅在时间预估、置信度偏低（<0.7）或存在活动分段时展示，便于核对不确定字段
   const showEvidence = e.payload.estimated === true || e.payload.confidence < 0.7 || (e.payload.phases?.length ?? 0) > 0;
-  const llmProv = (e.payload.provenance ?? []).filter((p) => p.method === 'llm' && p.evidence);
+  // 同类证据（method + fields）只留最新一条，避免多次重跑后同一字段的证据堆叠
+  const llmProv = latestProvenance(e.payload.provenance ?? []).filter((p) => p.method === 'llm' && p.evidence);
   const evidenceBlock = showEvidence && llmProv.length
     ? `<div class="sub">LLM 证据</div>
         <ul class="provs">${llmProv.map((p) => {
@@ -254,19 +295,19 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
       }).join('')}</ul>`
     : '';
   const detail = `<details><summary>数据详情</summary>
+        ${pubBlock}
         ${descBlock}
         ${catBlock}
         ${tagsBlock}
         ${evidenceBlock}
         ${srcBlock}
-        ${srcPost ? ocrBlock(srcPost.images, ocr) : '<p class="desc muted">无来源动态，无 OCR 文本。</p>'}
       </details>`;
 
   // 行锚点：供来源动态跳转与外部深链定位
   const anchorId = `entry-${e.id}`;
   const startTs = e.startAt !== undefined ? ` data-start-ts="${e.startAt}"` : '';
   const endTs = e.endAt !== undefined ? ` data-end-ts="${e.endAt}"` : '';
-  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}"${startTs}${endTs} data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
+  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}"${startTs}${endTs} data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${endedMark}${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
 }
 
 /**
@@ -376,8 +417,8 @@ const FILTER_SCRIPT = `<script>
 
   /**
    * 结构化条目排序（仅前端重排 ul.entries 内的 li）：
-   * - 已结束条目（endTs<now）始终沉到未结束条目之后，不受升降序影响；
-   * - 未结束组内按所选键（开始/结束/持续时间）排序，持续时间=endTs-startTs，缺键沉底；
+   * - 全部条目同池排序，不按是否已结束分组；
+   * - 按所选键（开始/结束/持续时间）排序，持续时间=endTs-startTs，缺键沉底；
    * - 只在当前 DOM 行间排，筛选隐藏的行同样参与重排（显隐与排序解耦）。
    */
   function sortEntries() {
@@ -385,7 +426,6 @@ const FILTER_SCRIPT = `<script>
     if (!ul) return;
     var key = sortBy.value;
     var asc = sortDir.dataset.dir === 'asc';
-    var nowSec = Math.floor(Date.now() / 1000);
     var val = function (row) {
       var s = row.dataset.startTs ? Number(row.dataset.startTs) : null;
       var e = row.dataset.endTs ? Number(row.dataset.endTs) : null;
@@ -393,14 +433,8 @@ const FILTER_SCRIPT = `<script>
       if (key === 'end') return e;
       return s !== null && e !== null ? e - s : null; // duration
     };
-    var ended = function (row) {
-      // 必须显式转布尔：无 endTs 时 dataset 返回 ""，与 false 不等会破坏比较器一致性
-      return !!(row.dataset.endTs && Number(row.dataset.endTs) < nowSec);
-    };
     var lis = Array.prototype.slice.call(ul.querySelectorAll('li[data-game]'));
     lis.sort(function (a, b) {
-      var ae = ended(a), be = ended(b);
-      if (ae !== be) return ae ? 1 : -1;       // 已结束统一沉底
       var va = val(a), vb = val(b);
       if (va === null && vb === null) return 0;
       // 有排序值的行在前、缺值行沉底（升降序一致）；有值行之间再按方向排
@@ -557,7 +591,7 @@ export function renderPage(data: PageData): string {
       </select>
     </label>
     <button id="f-dir" type="button" title="当前升序（早→晚 / 短→长），点击切换为降序">↑</button>
-    <label title="勾选后显示结束时间已过的活动，它们始终排在未结束活动之后"><input id="f-ended" type="checkbox">显示已结束</label>
+    <label title="勾选后显示结束时间已过的活动，它们与未结束活动一起参与排序"><input id="f-ended" type="checkbox">显示已结束</label>
     <button id="f-reset" type="button">重置</button>
   </div>`;
 

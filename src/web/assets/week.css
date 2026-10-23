@@ -1,12 +1,13 @@
 /* 周视图甘特图样式（仅 /week 加载） */
 
-/* 滚动容器：横向+纵向；高度由 JS 设为视口高度 */
+/* 滚动容器：横向+纵向；高度由 JS 设为视口高度。
+   容器灰底 = 渲染窗口之外的未加载区域；时间轴自身白底覆盖其中的已渲染部分。 */
 .gantt-container {
   overflow: auto;
   position: relative;
   border: 1px solid #eee;
   border-radius: 6px;
-  background: #fff;
+  background: #eef0f3;
 }
 
 /* 时间轴整体宽度由 JS 按精度与范围动态设置。
@@ -15,6 +16,13 @@
    position 无关（见 .gantt-label / .gantt-group-header 注释）。 */
 .gantt-timeline {
   position: relative;
+  background: #fff;
+  /* 任何超出窗口的绘制（色条、分组标题的补底伪元素）都被裁到时间轴内部，
+     既不会撑大横向滚动区，也不会盖住右侧未加载区域的灰底。
+     clip 不创建滚动容器，内部 sticky 仍以 .gantt-container 为滚动参照。 */
+  overflow: clip;
+  /* 右边界标记：窗口的渲染终点，右外侧即未加载区域 */
+  box-shadow: 2px 0 0 #c2c8d0;
   --cell-width: 80px;       /* 单格宽度，精度切换时由 JS 改此变量 */
   --row-height: 32px;       /* 活动行高，Ctrl+滚轮缩放 */
   --group-header-height: 28px;
@@ -96,6 +104,7 @@
 /* 色条：正常流中用 margin-left 定位起始位置，width 控制跨度；
    overflow:visible 让 sticky 活动名可超出色条右边缘 */
 .gantt-bar-fill {
+  position: relative;
   height: calc(var(--row-height) - 6px);
   margin-top: 3px;
   border-radius: 3px;
@@ -104,19 +113,41 @@
   overflow: visible;
   cursor: pointer;
 }
-.gantt-bar-fill.no-start { border-left: 2px dashed #999; }
+/* 左端超出窗口或无起点：虚线左沿表示时间轴继续向左延伸 */
+.gantt-bar-fill.no-start,
+.gantt-bar-fill.clip-start { border-left: 2px dashed #999; }
 
-/* 色条按类型着色 */
-.gantt-bar-fill[data-type="ACTIVITY"]     { background: #4a90c2; }
-.gantt-bar-fill[data-type="GACHA"]        { background: #8a6cc9; }
-.gantt-bar-fill[data-type="SHOP"]         { background: #d98a3c; }
-.gantt-bar-fill[data-type="COLLAB"]       { background: #3fa87a; }
-.gantt-bar-fill[data-type="ANNOUNCEMENT"] { background: #888; }
+/* 右端超出窗口（clip-end）或无结束日期（open-end）：右端渐隐 + 箭头，
+   与"活动恰好在窗口边界结束"区分开。 */
+.gantt-bar-fill.clip-end,
+.gantt-bar-fill.open-end {
+  background-image: linear-gradient(to right, rgba(255,255,255,0) 72%, rgba(255,255,255,0.6) 100%);
+}
+.gantt-bar-fill.clip-end::after,
+.gantt-bar-fill.open-end::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid rgba(255,255,255,0.95);
+  transform: translateY(-50%);
+}
+
+/* 色条按类型着色（用 background-color，保留裁剪/开放边界的渐隐层） */
+.gantt-bar-fill[data-type="ACTIVITY"]     { background-color: #4a90c2; }
+.gantt-bar-fill[data-type="GACHA"]        { background-color: #8a6cc9; }
+.gantt-bar-fill[data-type="SHOP"]         { background-color: #d98a3c; }
+.gantt-bar-fill[data-type="COLLAB"]       { background-color: #3fa87a; }
+.gantt-bar-fill[data-type="ANNOUNCEMENT"] { background-color: #888; }
 
 /* 状态层：未开始半透明；已结束置灰 */
 .gantt-bar-fill.state-future { opacity: 0.45; }
 .gantt-bar-fill.state-active { opacity: 1; }
-.gantt-bar-fill.state-ended  { background: #bbb !important; opacity: 0.7; }
+.gantt-bar-fill.state-ended  { background-color: #bbb !important; opacity: 0.7; }
 
 /* 活动名 + chip：色条内部，sticky left 固定在视口左边缘；无独立背景，文字在色条上。
    必须用 width: fit-content 把宽度收缩到内容宽度：sticky 元素的横向可

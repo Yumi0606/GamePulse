@@ -3,8 +3,9 @@
 //
 // 核心交互：
 //   普通滚轮       → 横向滚动时间轴
-//   Shift+滚轮     → 缩放精度（小时/天/周/月）
-//   Ctrl+滚轮      → 缩放行高（20~60px）
+//   Shift+滚轮     → 纵向滚动
+//   Ctrl+滚轮      → 缩放精度（小时/天/周/月）
+//   Alt+滚轮       → 缩放行高（20~60px）
 //   拖动任意区域   → 平移视口（5px 阈值区分点击）
 //   点击条         → 弹出详情 popover
 //   移动端：单指拖动平移、双指捏合缩放、单击详情
@@ -285,10 +286,15 @@
         return asc ? va - vb : vb - va;
       });
 
-      html += '<div class="gantt-group-header">' + gameName + '<span class="count">(' + list.length + ')</span></div>';
+      // 逐行渲染；完全落在渲染窗口外的条目返回空串，不计入组内数量
+      var rowsHtml = '';
+      var visibleCount = 0;
       list.forEach(function (e) {
-        html += renderRow(e, startCell, endCell, now);
+        var row = renderRow(e, startCell, endCell, now);
+        if (row) { rowsHtml += row; visibleCount += 1; }
       });
+      if (visibleCount === 0) return;
+      html += '<div class="gantt-group-header">' + gameName + '<span class="count">(' + visibleCount + ')</span></div>' + rowsHtml;
     });
 
     if (html === '') {
@@ -305,33 +311,33 @@
     var chipText = catLabel ? (typeLabel + '·' + catLabel) : typeLabel;
 
     // 色条定位（条内绝对定位）
+    // 渲染窗口是硬边界：色条一律裁剪到 [startCell, endCell]，否则超出窗口的
+    // width 会把容器的横向滚动区撑到窗口之外，出现"无表头、无网格"的空白区。
     var fillStyle = '';
     var fillCls = 'gantt-bar-fill ' + stateCls;
     var hasStart = e.startAt !== null;
     var hasEnd = e.endAt !== null;
 
-    if (hasStart && hasEnd) {
-      var sIdx = cellIndex(e.startAt, state.precision);
-      var eIdx = cellIndex(e.endAt, state.precision);
-      var left = (sIdx - startCell) * state.cellWidth;
-      var width = (eIdx - sIdx + 1) * state.cellWidth;
-      fillStyle = 'margin-left:' + left + 'px;width:' + width + 'px;';
-    } else if (!hasStart && hasEnd) {
-      // 无起点：从视口最左端画到结束日
-      var eIdx = cellIndex(e.endAt, state.precision);
-      var width = (eIdx - startCell + 1) * state.cellWidth;
-      fillStyle = 'margin-left:0;width:' + width + 'px;';
-      fillCls += ' no-start';
-    } else if (hasStart && !hasEnd) {
-      // 无终点：从起点画到视口最右端
-      var sIdx = cellIndex(e.startAt, state.precision);
-      var left = (sIdx - startCell) * state.cellWidth;
-      var width = (endCell - sIdx + 1) * state.cellWidth;
-      fillStyle = 'margin-left:' + left + 'px;width:' + width + 'px;';
-    } else {
-      // 两端皆无：不画条（进待锚定列表）
-      return '';
-    }
+    // 两端皆无：不画条（进待锚定列表）
+    if (!hasStart && !hasEnd) return '';
+
+    var rawS = hasStart ? cellIndex(e.startAt, state.precision) : startCell;
+    var rawE = hasEnd ? cellIndex(e.endAt, state.precision) : endCell;
+    // 完全落在窗口外：不渲染行
+    if (rawE < startCell || rawS > endCell) return '';
+
+    var sIdx = Math.max(rawS, startCell);
+    var eIdx = Math.min(rawE, endCell);
+    var left = (sIdx - startCell) * state.cellWidth;
+    var width = (eIdx - sIdx + 1) * state.cellWidth;
+    fillStyle = 'margin-left:' + left + 'px;width:' + width + 'px;';
+
+    // 裁剪标记：条在窗口边界处被截断，而不是活动在此结束
+    if (hasStart && e.startAt < state.viewStart) fillCls += ' clip-start';
+    if (hasEnd && e.endAt > state.viewEnd) fillCls += ' clip-end';
+    // 无结束日期：右端为开放边界，同样不能画到边界就当成结束
+    if (!hasEnd) fillCls += ' open-end';
+    if (!hasStart) fillCls += ' no-start';
 
     var name = e.canonicalName || e.title;
     // 活动名放在色条内部，正常流位置即色条左边缘，无需 margin-left；
@@ -410,22 +416,28 @@
   // ---------- 交互：滚轮 ----------
 
   container.addEventListener('wheel', function (e) {
-    if (e.shiftKey) {
-      // Shift+滚轮：缩放精度
+    // Shift+滚轮时部分浏览器把滚动量放进 deltaX，取两者中绝对值较大的作为滚轮量
+    var amount = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd+滚轮：缩放精度
       e.preventDefault();
       var idx = PRECISION_INDEX[state.precision];
       // 向上滚动（deltaY<0）粒度变小（月→周→天→小时），向下滚动粒度变大
-      var next = e.deltaY < 0 ? Math.max(idx - 1, 0) : Math.min(idx + 1, PRECISIONS.length - 1);
+      var next = amount < 0 ? Math.max(idx - 1, 0) : Math.min(idx + 1, PRECISIONS.length - 1);
       if (next !== idx) setPrecision(PRECISIONS[next].key);
-    } else if (e.ctrlKey || e.metaKey) {
-      // Ctrl/Cmd+滚轮：缩放行高
+    } else if (e.altKey) {
+      // Alt+滚轮：缩放行高
       e.preventDefault();
-      var delta = e.deltaY < 0 ? 2 : -2;
+      var delta = amount < 0 ? 2 : -2;
       setRowHeight(Math.min(ROW_HEIGHT_MAX, Math.max(ROW_HEIGHT_MIN, state.rowHeight + delta)));
+    } else if (e.shiftKey) {
+      // Shift+滚轮：纵向滚动
+      e.preventDefault();
+      container.scrollTop += amount;
     } else {
       // 普通滚轮：横向滚动（把纵向滚轮转为横向滚动）
       e.preventDefault();
-      container.scrollLeft += e.deltaY;
+      container.scrollLeft += amount;
     }
   }, { passive: false });
 

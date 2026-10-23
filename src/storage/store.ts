@@ -898,6 +898,24 @@ function schedulePrecision(
 }
 
 /**
+ * provenance 归并：同一（method, fields 集合）视为同类证据，只保留最新一条。
+ * 重跑同一条目时 LLM 证据几乎逐次追加，直接拼接会让 payload 随重跑次数无限膨胀；
+ * 同类证据的新结论总是覆盖旧结论，不同类（source/ocr/锚定）继续保留。
+ */
+function mergeProvenance(
+  existing: EntryPayload['provenance'],
+  incoming: EntryPayload['provenance'],
+): EntryPayload['provenance'] {
+  const keyOf = (p: { method: string; fields: string[] }): string =>
+    `${p.method}|${[...p.fields].sort().join(',')}`;
+  const merged = new Map<string, NonNullable<EntryPayload['provenance']>[number]>();
+  for (const p of existing ?? []) merged.set(keyOf(p), p);
+  for (const p of incoming ?? []) merged.set(keyOf(p), p);
+  const list = [...merged.values()];
+  return list.length > 0 ? list : undefined;
+}
+
+/**
  * 合并两条同 canonicalName 的 entry：时间字段以本次重跑结果为准（本次无值则保留旧值），
  * 文本字段取发布时间最新的，category/tags 去重并集，postIds 合并去重，
  * 主来源 postId 取 publishedAt 最早的动态。
@@ -983,7 +1001,7 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
     estimated: ex.estimated || inc.estimated,
     // 取本次结果的置信度：与时间取值保持一致，不再累积 max（否则形成只升不降的壁垒）
     confidence: inc.confidence,
-    provenance: [...(ex.provenance ?? []), ...(inc.provenance ?? [])],
+    provenance: mergeProvenance(ex.provenance, inc.provenance),
     extra: { ...ex.extra, ...inc.extra, postIds },
   };
 

@@ -24,7 +24,7 @@
   1. 从所有条目的 `payload.extra.postIds` 移除当前 post（旧条目没有 `postIds` 时退回 `post_id` 列判断），变空则删除该条目；
   2. 逐条按 id 合并或插入，`postIds` 记为多来源，主来源 `postId` 取最早发布的动态；
   3. 规范化规范名撞车时收敛为一行，并合并各行的来源列表。
-- 字段合并：时间以本次重跑为准（`b ?? a`，避免历史错误值因 confidence 壁垒无法修正）；`confidence` 取本次值不累积 max；文本取发布时间最新；`category`/`tags` 取并集；`canonicalName` 现有值优先、为空时补齐。
+- 字段合并：时间以本次重跑为准（`b ?? a`，避免历史错误值因 confidence 壁垒无法修正）；`confidence` 取本次值不累积 max；文本取发布时间最新；`category`/`tags` 取并集；`canonicalName` 现有值优先、为空时补齐；`provenance` 按 `method + fields` 保留最新一条，避免重跑次数直接累积证据项。
 - 开始时间精度保护：本次结果只有纯日期/相对表述引用（`rough`）时，不覆盖已有的明确绝对值或锚定值（`exact`）；`confidence` 不参与该判定。
 
 ## 依赖规则
