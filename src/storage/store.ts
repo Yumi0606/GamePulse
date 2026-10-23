@@ -963,6 +963,11 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
   const end = pickSchedule(existing.endAt, ex.endRef, incoming.endAt, inc.endRef);
   const startAt = start.at;
   const endAt = end.at;
+  // 时分可否与最终采用的时间值同源：采用本次值才取本次标记，否则沿用旧标记
+  const startTimeKnown =
+    startAt !== undefined && startAt === incoming.startAt ? inc.startTimeKnown : ex.startTimeKnown;
+  const endTimeKnown =
+    endAt !== undefined && endAt === incoming.endAt ? inc.endTimeKnown : ex.endTimeKnown;
   const rewardEndAt = pickTime(ex.rewardEndAt, inc.rewardEndAt);
 
   // 分段取并集，按开始时间排序并重排 index
@@ -997,6 +1002,8 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
     startRef: start.ref,
     endRef: end.ref,
     rewardEndAt,
+    startTimeKnown,
+    endTimeKnown,
     phases: phases.length > 0 ? phases : undefined,
     estimated: ex.estimated || inc.estimated,
     // 取本次结果的置信度：与时间取值保持一致，不再累积 max（否则形成只升不降的壁垒）

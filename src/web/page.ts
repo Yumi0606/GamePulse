@@ -209,6 +209,9 @@ function latestProvenance(
  */
 function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<string, OcrRecordView>): string {
   const fmt = (unix?: number): string => (unix ? fmtCst(unix) : '—');
+  // 纯日期条目（*TimeKnown=false）只显示日期，不展示补出来的时分
+  const fmtBound = (unix?: number, known?: boolean): string =>
+    unix ? (known === false ? fmtCstDate(unix) : fmtCst(unix)) : '—';
   const gameName = GAMES.find((g) => g.id === e.gameId)?.name ?? e.gameId;
   const label = ENTRY_TYPE_LABEL[e.type as EntryType] ?? e.type;
   const est = e.payload.estimated ? ' <span class="est">预估</span>' : '';
@@ -307,7 +310,7 @@ function entryRow(e: StoredEntry, postById: Map<string, StoredPost>, ocr: Map<st
   const anchorId = `entry-${e.id}`;
   const startTs = e.startAt !== undefined ? ` data-start-ts="${e.startAt}"` : '';
   const endTs = e.endAt !== undefined ? ` data-end-ts="${e.endAt}"` : '';
-  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}"${startTs}${endTs} data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmt(e.startAt)} → ${fmt(e.endAt)}${endRef}${startRef}</span><span class="tag">${label}</span>${endedMark}${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
+  return `      <li id="${escapeHtml(anchorId)}" data-game="${escapeHtml(e.gameId)}" data-type="${escapeHtml(e.type)}" data-start="${dStart}" data-end="${dEnd}"${startTs}${endTs} data-text="${searchText}"><span class="row-links"><a href="${rssHref}">RSS</a></span><span class="date">${fmtBound(e.startAt, e.payload.startTimeKnown)} → ${fmtBound(e.endAt, e.payload.endTimeKnown)}${endRef}${startRef}</span><span class="tag">${label}</span>${endedMark}${escapeHtml(gameName)}：<a href="${escapeHtml(e.url ?? '#')}" target="_blank" rel="noopener"${titleAttr}>${escapeHtml(e.title)}</a>${est}${conf}${reward}${phases}${desc}${detail}</li>`;
 }
 
 /**
@@ -731,7 +734,7 @@ export function renderCalendar(entries: StoredEntry[], ym: string): string {
         contL: si < 0,
         contR: ei > days - 1,
         title: e.title,
-        tip: `${prefix} 持续：${e.title}${estTip}（${fmtCst(e.startAt!)} → ${fmtCst(e.endAt!)}）`,
+        tip: `${prefix} 持续：${e.title}${estTip}（${e.startAt !== undefined && e.payload.startTimeKnown === false ? fmtCstDate(e.startAt) : fmtCst(e.startAt!)} → ${e.endAt !== undefined && e.payload.endTimeKnown === false ? fmtCstDate(e.endAt) : fmtCst(e.endAt!)}）`,
         ...meta,
       });
     }

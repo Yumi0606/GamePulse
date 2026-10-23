@@ -167,6 +167,10 @@ export interface EntryPayload {
   endRef?: TimeRef;
   /** 奖励领取期结束（不属于分段），Unix 秒 */
   rewardEndAt?: number;
+  /** 开始时刻是否可信：false = 原文只给日期，仅有日期精度，展示层只显示日期不显示时分；无对应绝对值时省略 */
+  startTimeKnown?: boolean;
+  /** 结束时刻是否可信：语义同上 */
+  endTimeKnown?: boolean;
   /** 分段列表 */
   phases?: EntryPhase[];
   /** 起止时间为 LLM 推断值（原文未明确年份/日期，按上下文补全）——展示层需标注"预估" */

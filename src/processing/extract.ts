@@ -192,7 +192,9 @@ const VALID_SLOTS = ['activity', 'gacha', 'shop', 'collab', 'announcement'] as c
 
 /**
  * 纯日期（YYYY-MM-DD）补全用的游戏缺省活动更新时刻（北京时间）。
- * 原文只给日期（如"10月8日维护后"）时按此补时刻，同时 LLM 保留原文到 startRef/endRef 并标记 estimated。
+ * 原文只给日期（如"10月8日维护后"）时按此补时刻，仅用于排序与小时视图定位；
+ * 同时把 payload.startTimeKnown/endTimeKnown 置 false，展示层只显示日期，不显示补出来的时分。
+ * 未登记的游戏按 00:00 存储：宁可让排序落在当日零点，也不给新游戏编造一个假的开服时刻。
  */
 const DATE_DEFAULT_TIME: Record<string, { hour: number; minute: number }> = {
   arknights: { hour: 4, minute: 0 },       // 明日方舟日常刷新 04:00
@@ -336,6 +338,9 @@ function normalizeEntry(
     startRef: toRef(raw.startRef),
     endRef: toRef(raw.endRef),
     rewardEndAt,
+    // 纯日期只补了缺省时刻，时分不可信：标记后展示层只显示日期，锚定回填时再置为 true
+    startTimeKnown: start ? !start.dateOnly : undefined,
+    endTimeKnown: end ? !end.dateOnly : undefined,
     phases: raw.phases
       ?.map((p, i) => {
         const ps = parseTime(p.startAt, post.gameId);

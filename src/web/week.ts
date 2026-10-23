@@ -36,6 +36,9 @@ interface WeekEntry {
   summary?: string;
   startAt: number | null;
   endAt: number | null;
+  /** 纯日期条目（false）在提示框中只显示日期，不显示补出来的时分 */
+  startTimeKnown?: boolean;
+  endTimeKnown?: boolean;
   url: string | null;
   postTitle: string | null;
   postUrl: string | null;
@@ -57,6 +60,8 @@ export function renderWeek(entries: StoredEntry[], posts: StoredPost[], fromRaw:
       summary: e.payload.summary,
       startAt: e.startAt ?? null,
       endAt: e.endAt ?? null,
+      startTimeKnown: e.payload.startTimeKnown,
+      endTimeKnown: e.payload.endTimeKnown,
       url: e.url ?? null,
       postTitle: post?.title ?? null,
       postUrl: post?.url ?? null,

@@ -190,8 +190,14 @@ export async function resolveSemanticRefs(gameId: string): Promise<{
     }
     change.payload[task.field] = ref;
     if (at != null) {
-      if (task.field === 'startRef') change.startAt = at;
-      else change.endAt = at;
+      // 窗口给出精确时刻，覆盖纯日期条目的"时分不可信"标记
+      if (task.field === 'startRef') {
+        change.startAt = at;
+        change.payload.startTimeKnown = true;
+      } else {
+        change.endAt = at;
+        change.payload.endTimeKnown = true;
+      }
     }
     change.evidence.push(`${task.field}="${task.refText}" → ${r.windowId ?? 'null'}${at != null ? '@' + fmt(at) : ''}（${r.reason ?? '无说明'}）`);
     changes.set(entry.id, change);

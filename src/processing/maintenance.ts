@@ -289,6 +289,8 @@ export async function anchorMaintenanceRefs(gameId: string): Promise<AnchorResul
     if (started) {
       startAt = started.at;
       payload.startRef = started.ref;
+      // 维护窗口给出精确时刻，覆盖纯日期条目的"时分不可信"标记
+      payload.startTimeKnown = true;
       appliedStart = true;
     }
     const ended = anchorRef(payload.endRef, referenceAt, windows);
@@ -296,6 +298,7 @@ export async function anchorMaintenanceRefs(gameId: string): Promise<AnchorResul
     if (ended) {
       endAt = ended.at;
       payload.endRef = ended.ref;
+      payload.endTimeKnown = true;
       appliedEnd = true;
     }
 
@@ -304,11 +307,13 @@ export async function anchorMaintenanceRefs(gameId: string): Promise<AnchorResul
     if (startAt != null && endAt != null && endAt <= startAt) {
       if (appliedStart) {
         payload.startRef = entry.payload.startRef;
+        payload.startTimeKnown = entry.payload.startTimeKnown;
         startAt = entry.startAt;
         appliedStart = false;
       }
       if (appliedEnd) {
         payload.endRef = entry.payload.endRef;
+        payload.endTimeKnown = entry.payload.endTimeKnown;
         endAt = entry.endAt;
         appliedEnd = false;
       }

@@ -38,6 +38,13 @@ function fmtCst(unix: number): string {
   }).format(new Date(unix * 1000));
 }
 
+/** 北京时间 "YYYY-MM-DD"：纯日期条目只展示日期，不展示补出来的时分 */
+function fmtCstDate(unix: number): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(unix * 1000));
+}
+
 /** RSS 文档骨架：给定 channel 元信息与已生成的 item XML */
 function rssDoc(channel: { title: string; link: string; description: string; lastBuildDate?: number }, itemXml: string): string {
   const lb = channel.lastBuildDate !== undefined
@@ -122,6 +129,9 @@ function entryItemXml(e: Entry, pubDateFallback: number, sourcePost?: Item): str
   push(gpLine('      ', 'gp:category', e.payload.category));
   push(gpLine('      ', 'gp:startAt', e.startAt));
   push(gpLine('      ', 'gp:endAt', e.endAt));
+  // 时分不可信标记：false 表示该端只有日期精度，消费方应忽略时间戳中的时分
+  if (e.payload.startTimeKnown === false) lines.push('      <gp:startTimeKnown>false</gp:startTimeKnown>');
+  if (e.payload.endTimeKnown === false) lines.push('      <gp:endTimeKnown>false</gp:endTimeKnown>');
   push(gpLine('      ', 'gp:rewardEndAt', e.payload.rewardEndAt));
   if (e.payload.estimated) lines.push('      <gp:estimated/>');
   push(gpLine('      ', 'gp:summary', e.payload.summary));
@@ -173,7 +183,9 @@ export function buildAggregatedRss(items: Item[], channelTitle: string, channelL
 /** 单条结构化条目的 RSS item 展示文本：时间 + 分段 + 奖励截止 + 待锚定引用 */
 function entryDescription(e: Entry): string {
   const fmt = (u?: number): string => (u ? fmtCst(u) : '—');
-  const parts = [`时间：${fmt(e.startAt)} → ${fmt(e.endAt)}${e.payload.estimated ? '（预估）' : ''}`];
+  const fmtBound = (u: number | undefined, known: boolean | undefined): string =>
+    u ? (known === false ? fmtCstDate(u) : fmtCst(u)) : '—';
+  const parts = [`时间：${fmtBound(e.startAt, e.payload.startTimeKnown)} → ${fmtBound(e.endAt, e.payload.endTimeKnown)}${e.payload.estimated ? '（预估）' : ''}`];
   if (e.payload.summary) parts.push(e.payload.summary);
   if (e.payload.phases?.length) {
     parts.push(`分段：${e.payload.phases.map((p) => `#${p.index} ${p.title ?? ''} ${fmt(p.startAt)}→${fmt(p.endAt)}`).join('；')}`);
