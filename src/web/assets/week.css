@@ -68,7 +68,7 @@
   z-index: 25;
   width: fit-content;
   height: var(--group-header-height);
-  background: #f0f0f0;
+  background: var(--group-bg, #f0f0f0);
   border-bottom: 1px solid #ccc;
   display: flex;
   align-items: center;
@@ -76,7 +76,12 @@
   font-size: 13px;
   font-weight: 600;
   color: #333;
+  cursor: pointer;
+  user-select: none;
 }
+/* 折叠指示：▾ 展开 / ▸ 折叠 */
+.gantt-group-header .gantt-fold { margin-right: 5px; font-size: 10px; color: #666; }
+.gantt-group-header:hover { filter: brightness(0.97); }
 /* 标题固定后，文字右侧的灰底由伪元素补齐：跟随标题固定，向右延伸一屏；
    绝对定位不占据布局宽度，不会扩大滚动范围 */
 .gantt-group-header::after {
@@ -86,10 +91,24 @@
   bottom: 0;
   left: 100%;
   width: 100vw;
-  background: #f0f0f0;
+  background: var(--group-bg, #f0f0f0);
   border-bottom: 1px solid #ccc;
 }
 .gantt-group-header .count { color: #888; font-weight: normal; margin-left: 6px; font-size: 12px; }
+
+/* 分组标题按游戏着色（淡色底 + 左侧色条），色条本身仍按类型着色 */
+.gantt-group-header[data-game="arknights"]         { --group-bg: #eaf1fa; border-left: 4px solid #3f6fb5; }
+.gantt-group-header[data-game="endfield"]          { --group-bg: #f3f1fd; border-left: 4px solid #6a5acd; }
+.gantt-group-header[data-game="delta-force"]       { --group-bg: #fdf7e6; border-left: 4px solid #c9a227; }
+.gantt-group-header[data-game="wuthering-waves"]   { --group-bg: #e9f8f4; border-left: 4px solid #2f9e8f; }
+.gantt-group-header[data-game="azur-lane"]         { --group-bg: #eaf4fb; border-left: 4px solid #2f7fa8; }
+.gantt-group-header[data-game="azur-promilia"]     { --group-bg: #e6f8f8; border-left: 4px solid #14a3a3; }
+.gantt-group-header[data-game="genshin"]           { --group-bg: #eef2fd; border-left: 4px solid #4f6fd8; }
+.gantt-group-header[data-game="honkai-star-rail"]  { --group-bg: #f2effc; border-left: 4px solid #8a6fd1; }
+.gantt-group-header[data-game="zenless-zone-zero"] { --group-bg: #f8f8e8; border-left: 4px solid #a8b32a; }
+
+/* 折叠状态：隐藏组内活动行，标题保留 */
+.gantt-group-body.is-collapsed { display: none; }
 
 /* 活动行：单行高度，行内有网格底纹，色条正常流定位 */
 .gantt-row {
@@ -137,7 +156,8 @@
   transform: translateY(-50%);
 }
 
-/* 色条按类型着色（用 background-color，保留裁剪/开放边界的渐隐层） */
+/* 色条按类型着色（用 background-color，保留裁剪/开放边界的渐隐层）；
+   游戏归属由分组标题的背景色表达，不与类型编码争夺色条 */
 .gantt-bar-fill[data-type="ACTIVITY"]     { background-color: #4a90c2; }
 .gantt-bar-fill[data-type="GACHA"]        { background-color: #8a6cc9; }
 .gantt-bar-fill[data-type="SHOP"]         { background-color: #d98a3c; }

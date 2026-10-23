@@ -77,6 +77,8 @@
     filterGame: '',
     filterType: '',
     filterKw: '',
+    // 折叠的游戏分组：{ gameId: true }；仅影响渲染，不写入本地偏好
+    collapsedGames: {},
   };
 
   // ---------- 工具函数 ----------
@@ -121,6 +123,17 @@
       timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', hour12: false,
     }).format(new Date(ts * 1000)).replace(/\//g, '-');
+  }
+
+  /** 纯日期条目（known=false）只显示日期，不显示补出来的时分 */
+  function fmtBound(ts, known) {
+    if (!ts) return '—';
+    if (known === false) {
+      return new Intl.DateTimeFormat('sv-SE', {
+        timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(ts * 1000));
+    }
+    return fmtCst(ts);
   }
 
   /** 格式化格索引对应的表头标签 */
@@ -253,7 +266,7 @@
     });
 
     // 按游戏分组（GAMES 顺序）
-    var gameOrder = ['arknights', 'endfield', 'delta-force', 'wuthering-waves', 'azur-lane'];
+    var gameOrder = ['arknights', 'endfield', 'delta-force', 'wuthering-waves', 'azur-lane', 'azur-promilia', 'genshin', 'honkai-star-rail', 'zenless-zone-zero'];
     var groups = {};
     filtered.forEach(function (e) {
       if (!groups[e.gameId]) groups[e.gameId] = [];
@@ -294,7 +307,12 @@
         if (row) { rowsHtml += row; visibleCount += 1; }
       });
       if (visibleCount === 0) return;
-      html += '<div class="gantt-group-header">' + gameName + '<span class="count">(' + visibleCount + ')</span></div>' + rowsHtml;
+      // 分组可折叠：标题始终渲染，组内行放在独立容器里整体隐藏
+      var collapsed = !!state.collapsedGames[gid];
+      html += '<div class="gantt-group-header" data-game="' + gid + '" role="button" aria-expanded="' + (!collapsed) + '">' +
+        '<span class="gantt-fold">' + (collapsed ? '▸' : '▾') + '</span>' + gameName +
+        '<span class="count">(' + visibleCount + ')</span></div>' +
+        '<div class="gantt-group-body' + (collapsed ? ' is-collapsed' : '') + '">' + rowsHtml + '</div>';
     });
 
     if (html === '') {
@@ -343,7 +361,7 @@
     // 活动名放在色条内部，正常流位置即色条左边缘，无需 margin-left；
     // sticky left:0 让活动名在色条可见时固定到视口左边，色条滚出后随之离开
     return '<div class="gantt-row">' +
-      '<div class="' + fillCls + '" data-type="' + e.type + '" data-entry-id="' + e.id + '" style="' + fillStyle + '">' +
+      '<div class="' + fillCls + '" data-type="' + e.type + '" data-game="' + e.gameId + '" data-entry-id="' + e.id + '" style="' + fillStyle + '">' +
         '<div class="gantt-label" title="' + esc(name) + '">' +
           '<span class="gantt-name">' + esc(name) + '</span>' +
           '<span class="gantt-chip">' + esc(chipText) + '</span>' +
@@ -492,6 +510,13 @@
   // ---------- 交互：点击条弹出 popover ----------
 
   function handleClick(e) {
+    // 分组标题：切换折叠状态（在 mouseup 的未拖动分支里处理，拖动结束不会误触）
+    var header = e.target.closest('.gantt-group-header');
+    if (header && header.dataset.game) {
+      state.collapsedGames[header.dataset.game] = !state.collapsedGames[header.dataset.game];
+      render();
+      return;
+    }
     var bar = e.target.closest('[data-entry-id]');
     if (!bar) { hidePopover(); return; }
     var id = bar.dataset.entryId;
@@ -506,7 +531,7 @@
     var name = entry.canonicalName || entry.title;
     var html = '<div class="pv-title">' + esc(name) + '</div>' +
       '<div class="pv-meta">' + esc(g) + ' · ' + esc(typeLabel) + (entry.category ? '·' + esc(entry.category) : '') + '</div>' +
-      '<div class="pv-meta">' + fmtCst(entry.startAt) + ' → ' + fmtCst(entry.endAt) + '</div>';
+      '<div class="pv-meta">' + fmtBound(entry.startAt, entry.startTimeKnown) + ' → ' + fmtBound(entry.endAt, entry.endTimeKnown) + '</div>';
     if (entry.summary) html += '<div style="margin-top:6px;">' + esc(entry.summary) + '</div>';
     if (entry.postTitle) {
       html += '<div style="margin-top:6px;font-size:12px;">来源：<a href="' + esc(entry.postUrl || '#') + '" target="_blank" rel="noopener">' + esc(entry.postTitle) + '</a></div>';
@@ -676,6 +701,10 @@
     'delta-force': '三角洲行动',
     'wuthering-waves': '鸣潮',
     'azur-lane': '碧蓝航线',
+    'azur-promilia': '蓝色星原：旅谣',
+    'genshin': '原神',
+    'honkai-star-rail': '崩坏：星穹铁道',
+    'zenless-zone-zero': '绝区零',
   };
 
   // ---------- 启动 ----------
