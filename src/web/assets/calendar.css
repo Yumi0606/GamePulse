@@ -24,6 +24,10 @@ tr.span-row[data-game="endfield"] .bar { --bar-bg: #efedfb; --bar-fg: #4b3f9e; -
 tr.span-row[data-game="delta-force"] .bar { --bar-bg: #faf3e0; --bar-fg: #7a5a00; --bar-accent: #c9a227; }
 tr.span-row[data-game="wuthering-waves"] .bar { --bar-bg: #e6f6f2; --bar-fg: #1f6b5f; --bar-accent: #2f9e8f; }
 tr.span-row[data-game="azur-lane"] .bar { --bar-bg: #e8f2fa; --bar-fg: #1f5c85; --bar-accent: #4a90c2; }
+tr.span-row[data-game="azur-promilia"] .bar { --bar-bg: #e6f7f8; --bar-fg: #14566b; --bar-accent: #3aa7c4; }
+tr.span-row[data-game="genshin"] .bar { --bar-bg: #eef4fb; --bar-fg: #2a4a70; --bar-accent: #5b8fd4; }
+tr.span-row[data-game="honkai-star-rail"] .bar { --bar-bg: #f1eefb; --bar-fg: #4a3670; --bar-accent: #8a6fd1; }
+tr.span-row[data-game="zenless-zone-zero"] .bar { --bar-bg: #f7f7e8; --bar-fg: #3f4420; --bar-accent: #b8c22f; }
 /* +N 按钮：重置 button 默认外观，保留键盘可达性 */
 .more { display: block; width: 100%; text-align: left; padding: 0; border: 0; background: none; color: #888; font-size: 11px; font-family: inherit; cursor: pointer; }
 .more:hover { color: #444; text-decoration: underline; }

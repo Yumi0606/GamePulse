@@ -17,6 +17,19 @@ export interface GameRule {
 /** 所有游戏通用的固定子类型兜底名 */
 export const CATEGORY_OTHER = '其他';
 
+/**
+ * 新接入游戏的通用极简词表：先只约束各大类共有的子类型，避免 category 出现同义异构值。
+ * 暂不写游戏专属 prompt，待真实错分样本积累后按游戏细化（见 待办.md）。
+ * 一次观测到的缺口：版本前瞻特别节目曾被归入"其他"，故 ANNOUNCEMENT 增加"版本前瞻"。
+ */
+const UNIVERSAL_CATEGORIES: GameRule['categories'] = {
+  ACTIVITY: ['版本活动', '限时活动', '网页活动', '限时签到', '版本导览', CATEGORY_OTHER],
+  GACHA: ['限定卡池', '常驻卡池', '武器卡池', CATEGORY_OTHER],
+  SHOP: ['礼包', '时装/外观', CATEGORY_OTHER],
+  ANNOUNCEMENT: ['版本更新', '维护公告', '版本前瞻', '预下载', '补偿公告', '结束提醒', CATEGORY_OTHER],
+  COLLAB: ['IP联动', '线下展会', CATEGORY_OTHER],
+};
+
 const RULES: Record<string, GameRule> = {
   arknights: {
     prompt: `## 明日方舟专属规则
@@ -108,6 +121,27 @@ const RULES: Record<string, GameRule> = {
       ANNOUNCEMENT: ['版本更新', '维护公告', '节目预告', '结束提醒', CATEGORY_OTHER],
       COLLAB: ['IP联动', '线下展会', CATEGORY_OTHER],
     },
+  },
+
+  // 以下四款为新增接入：暂不注入专属规则正文，只用通用词表约束子类型
+  'azur-promilia': {
+    prompt: '',
+    categories: UNIVERSAL_CATEGORIES,
+  },
+
+  genshin: {
+    prompt: '',
+    categories: UNIVERSAL_CATEGORIES,
+  },
+
+  'honkai-star-rail': {
+    prompt: '',
+    categories: UNIVERSAL_CATEGORIES,
+  },
+
+  'zenless-zone-zero': {
+    prompt: '',
+    categories: UNIVERSAL_CATEGORIES,
   },
 };
 

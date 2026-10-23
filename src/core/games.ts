@@ -10,6 +10,11 @@ export const GAMES: Game[] = [
   { id: 'delta-force', name: '三角洲行动', bilibiliUid: 3494376565115651, enabled: true },
   { id: 'wuthering-waves', name: '鸣潮', bilibiliUid: 1955897084, enabled: true },
   { id: 'azur-lane', name: '碧蓝航线', bilibiliUid: 233114659, enabled: true },
+  // 蓝色星原与碧蓝航线同属蛮啾网络，紧随其后；米哈游三款统一置于末尾
+  { id: 'azur-promilia', name: '蓝色星原：旅谣', bilibiliUid: 3546569016085336, enabled: true },
+  { id: 'genshin', name: '原神', bilibiliUid: 401742377, enabled: true },
+  { id: 'honkai-star-rail', name: '崩坏：星穹铁道', bilibiliUid: 1340190821, enabled: true },
+  { id: 'zenless-zone-zero', name: '绝区零', bilibiliUid: 1636034895, enabled: true },
 ];
 
 /** 取启用的游戏 */
