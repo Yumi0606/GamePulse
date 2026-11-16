@@ -17,11 +17,17 @@ export function PostCard({ post, gameName }: { post: PostDto; gameName: string }
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="w-[132px] shrink-0 font-mono text-[12px] text-muted">{fmtCst(post.publishedAt)}</span>
         <Badge>{gameName}</Badge>
+        {/* 状态徽标固定在标题前，标题长短不影响它的位置 */}
+        {post.entryCount === null ? <Badge tone="warn">未提取</Badge> : null}
+        {post.entryCount === 0 ? (
+          <Badge tone="warn">
+            <span title="已提取，但没有生成任何活动条目">提取 0 条</span>
+          </Badge>
+        ) : null}
         <a className="text-[14px]" href={post.url} target="_blank" rel="noreferrer" title={post.description}>
           {post.title}
         </a>
         {post.images?.length ? <span className="text-[12px] text-muted">[图 ×{post.images.length}]</span> : null}
-        {post.entryCount === null ? <Badge tone="warn">未提取</Badge> : null}
         <span className="ml-auto flex items-center gap-2 text-[11px]">
           <button type="button" className="text-brand hover:underline" onClick={copyId} title="复制该动态在数据库中的 id">
             复制 ID

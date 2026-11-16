@@ -523,14 +523,14 @@ export function WeekPage() {
 
       {unanchored.length > 0 ? (
         <Card>
-          <h2 className="mb-1 border-l-4 border-[#f5712c] pl-2 text-[15px] font-semibold">
+          <h2 className="mb-1 border-l-4 border-brand pl-2 text-[15px] font-semibold">
             待锚定条目 <span className="text-[12px] font-normal text-muted">（{unanchored.length}，无起止时间）</span>
           </h2>
           <ul className="divide-y divide-line text-[13px]">
             {unanchored.map((e) => (
               <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
                 <span className="text-muted">[{gameName(e.gameId)}]</span>
-                <a href={`/app?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
+                <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
               </li>
             ))}
           </ul>
@@ -554,7 +554,7 @@ export function WeekPage() {
           </div>
           {popover.entry.summary ? <div className="mt-1.5">{popover.entry.summary}</div> : null}
           <div className="mt-2 text-[12px]">
-            <a href={`/app?entry=${encodeURIComponent(popover.entry.id)}`}>在列表中定位 →</a>
+            <a href={`/app/all?entry=${encodeURIComponent(popover.entry.id)}`}>在列表中定位 →</a>
           </div>
         </div>
       ) : null}

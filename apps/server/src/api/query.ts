@@ -38,6 +38,12 @@ export function intParam(defaultValue?: number) {
   return defaultValue === undefined ? base : base.default(defaultValue);
 }
 
+/** 非负整数参数（数量类筛选）：空串视为未提供，负数直接 400 */
+export const nonNegativeInt = z.preprocess(
+  (v) => (v === undefined || v === '' ? undefined : Number(v)),
+  z.number().int().min(0).optional(),
+);
+
 /** 分页参数：limit 1..MAX_LIMIT，offset ≥ 0 */
 export const limitParam = z.preprocess(
   (v) => (v === undefined || v === '' ? undefined : Number(v)),

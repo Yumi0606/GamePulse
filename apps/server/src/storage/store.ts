@@ -1285,14 +1285,24 @@ export interface PostQueryInput {
   q?: string;
   from?: number;
   to?: number;
+  /** 图片数量闭区间，对应 OCR 图片数筛选 */
+  imagesMin?: number;
+  imagesMax?: number;
+  /** 提取状态：never=从未成功提取，empty=提取过但没有排期，some=提取到至少一条 */
+  extracted?: 'never' | 'empty' | 'some';
+  /** 排序维度：published=发布时间，images=图片数量，entries=提取条目数 */
+  sort?: 'published' | 'images' | 'entries';
+  order?: 'asc' | 'desc';
   limit: number;
   offset: number;
 }
 
-/** 分页查询原始动态（固定按发布时间倒序，id 兜底） */
+/** 分页查询原始动态；默认按发布时间倒序，id 兜底保证翻页不抖动 */
 export async function queryPosts(input: PostQueryInput): Promise<{ items: StoredPost[]; total: number }> {
   const where: string[] = [];
   const params: (string | number)[] = [];
+  // images 存的是 URL 数组的 JSON 文本，用 json_array_length 直接计数
+  const imageCount = `json_array_length(COALESCE(images, '[]'))`;
   if (input.gameIds?.length) {
     where.push(`game_id IN (${new Array(input.gameIds.length).fill('?').join(',')})`);
     params.push(...input.gameIds);
@@ -1315,12 +1325,31 @@ export async function queryPosts(input: PostQueryInput): Promise<{ items: Stored
     where.push('published_at <= ?');
     params.push(input.to);
   }
+  if (input.imagesMin !== undefined) {
+    where.push(`${imageCount} >= ?`);
+    params.push(input.imagesMin);
+  }
+  if (input.imagesMax !== undefined) {
+    where.push(`${imageCount} <= ?`);
+    params.push(input.imagesMax);
+  }
+  if (input.extracted === 'never') {
+    where.push('entry_count IS NULL');
+  } else if (input.extracted === 'empty') {
+    where.push('entry_count = 0');
+  } else if (input.extracted === 'some') {
+    where.push('entry_count > 0');
+  }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = Number(
     (db.prepare(`SELECT COUNT(*) AS n FROM posts ${whereSql}`).get(...params) as { n: number }).n,
   );
+  const dir = input.order === 'asc' ? 'ASC' : 'DESC';
+  // 从未提取的动态按 -1 处理：升序时排最前（最可疑），降序时排最后
+  const sortKey =
+    input.sort === 'images' ? imageCount : input.sort === 'entries' ? 'COALESCE(entry_count, -1)' : 'published_at';
   const rows = db
-    .prepare(`SELECT * FROM posts ${whereSql} ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT * FROM posts ${whereSql} ORDER BY ${sortKey} ${dir}, id ${dir} LIMIT ? OFFSET ?`)
     .all(...params, input.limit, input.offset) as unknown as PostRow[];
   return { items: rows.map(rowToPost), total };
 }

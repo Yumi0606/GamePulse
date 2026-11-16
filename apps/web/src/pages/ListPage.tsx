@@ -1,26 +1,26 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { ENTRY_TYPES, ENTRY_TYPE_LABEL, fmtCst } from '@gamepulse/shared';
+import { ENTRY_TYPES, ENTRY_TYPE_LABEL } from '@gamepulse/shared';
 import { api } from '../lib/api';
-import { cstDateEnd, cstDateStart, fmtRelative } from '../lib/format';
+import { cstDateEnd, cstDateStart } from '../lib/format';
 import { useGameName, useGames } from '../lib/hooks';
 import { EntryCard } from '../components/EntryCard';
-import { PostCard } from '../components/PostCard';
-import { Card, Empty, Pagination, QueryState, SectionTitle } from '../components/ui';
+import { Card, Empty, Pagination, QueryState, SectionTitle, btnSecondary, fieldClass } from '../components/ui';
 
 /**
- * 列表视图：概览 + 源异常提示 + 筛选 + 结构化条目 + 原始动态。
+ * 全部活动（归档列表）。
  *
  * 筛选与分页以 URL query 为唯一真源（刷新、分享、前进后退都保持一致）；
  * 状态筛选的映射只在展示层做：active 展开成服务端认识的三个状态值。
+ * 原始动态已拆到 /app/posts，这里只保留活动，避免两类内容互相挤占。
  */
-const ENTRY_PAGE_SIZE = 50;
-const POST_PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 50;
+const PAGE_SIZES = [20, 50, 100];
 
 const STATUS_OPTIONS = [
-  { value: 'active', label: '未结束（默认）' },
-  { value: 'all', label: '全部' },
+  { value: 'active', label: '未结束的活动' },
+  { value: 'all', label: '全部状态' },
   { value: 'ongoing', label: '进行中' },
   { value: 'not-started', label: '未开始' },
   { value: 'ended', label: '已结束' },
@@ -33,14 +33,19 @@ export function ListPage() {
   const gamesQuery = useGames();
 
   const str = (key: string, fallback = '') => params.get(key) ?? fallback;
-  const patch = (values: Record<string, string | number | null>) => {
+
+  /**
+   * 更新 URL 参数。
+   * `keepPage` 用于翻页本身（页码与每页条数），其余筛选变化都回到第一页：
+   * 之前统一实现会在任何不含 page 的更新里删掉 page，导致翻原始动态把条目页码打回 1。
+   */
+  const patch = (values: Record<string, string | number | null>, options?: { keepPage?: boolean }) => {
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(values)) {
       if (value === null || value === '') next.delete(key);
       else next.set(key, String(value));
     }
-    // 筛选变化时回到第一页；翻页本身单独设置 page
-    if (!('page' in values)) next.delete('page');
+    if (!options?.keepPage) next.delete('page');
     setParams(next, { replace: true });
   };
 
@@ -55,7 +60,24 @@ export function ListPage() {
   // 深链定位单个条目（日历/周视图跳回）：此时忽略状态筛选，避免目标条目被默认条件隐藏
   const entryId = str('entry');
   const page = Math.max(1, Number(str('page', '1')) || 1);
-  const postPage = Math.max(1, Number(str('postPage', '1')) || 1);
+  const pageSize = PAGE_SIZES.includes(Number(str('size'))) ? Number(str('size')) : DEFAULT_PAGE_SIZE;
+
+  // 关键词用本地状态承载，防抖后再写 URL：中文输入法拼音阶段不会触发请求
+  const [keywordDraft, setKeywordDraft] = useState(keyword);
+  useEffect(() => setKeywordDraft(keyword), [keyword]);
+  useEffect(() => {
+    if (keywordDraft === keyword) return;
+    const timer = setTimeout(() => {
+      const next = new URLSearchParams(params);
+      if (keywordDraft) next.set('q', keywordDraft);
+      else next.delete('q');
+      next.delete('page');
+      setParams(next, { replace: true });
+    }, 350);
+    return () => clearTimeout(timer);
+    // params/setParams 每次渲染都是新引用，不能作为依赖，否则会重置计时器
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keywordDraft, keyword]);
 
   const status = entryId
     ? undefined
@@ -67,9 +89,10 @@ export function ListPage() {
 
   const from = cstDateStart(fromDate);
   const to = cstDateEnd(toDate);
+  const now = Math.floor(Date.now() / 1000);
 
   const entriesQuery = useQuery({
-    queryKey: ['entries', { gameId, type, status, keyword, from, to, sort, order, page, entryId }],
+    queryKey: ['entries', { gameId, type, status, keyword, from, to, sort, order, page, pageSize, entryId }],
     queryFn: () =>
       api.entries({
         gameId,
@@ -81,29 +104,11 @@ export function ListPage() {
         to,
         sort,
         order,
-        limit: ENTRY_PAGE_SIZE,
-        offset: (page - 1) * ENTRY_PAGE_SIZE,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       }),
     placeholderData: keepPreviousData,
   });
-
-  const postsQuery = useQuery({
-    queryKey: ['posts', { gameId, keyword, from, to, postPage }],
-    queryFn: () =>
-      api.posts({
-        gameId,
-        q: keyword,
-        from,
-        to,
-        limit: POST_PAGE_SIZE,
-        offset: (postPage - 1) * POST_PAGE_SIZE,
-      }),
-    placeholderData: keepPreviousData,
-  });
-
-  const healthQuery = useQuery({ queryKey: ['health'], queryFn: api.health });
-  const entriesTotalQuery = useQuery({ queryKey: ['entries-total'], queryFn: () => api.entries({ limit: 1 }) });
-  const postsTotalQuery = useQuery({ queryKey: ['posts-total'], queryFn: () => api.posts({ limit: 1 }) });
 
   // 条目的来源动态标题：把当前页所有 postId 一次批量查回
   const sourceIds = useMemo(() => {
@@ -127,66 +132,29 @@ export function ListPage() {
     [sourcePostsQuery.data],
   );
 
-  const health = healthQuery.data;
-  const now = health?.now ?? Math.floor(Date.now() / 1000);
+  const hasFilter = Boolean(gameId || type || keyword || fromDate || toDate || entryId || params.get('status') || params.get('sort'));
 
-  const reset = () => setParams(new URLSearchParams(), { replace: true });
+  // 分页器在列表上下各渲染一次，长列表翻页不必先滚到底
+  const pager = entriesQuery.data ? (
+    <div className="flex justify-end">
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={entriesQuery.data.total}
+        onChange={(p) => patch({ page: p === 1 ? null : p }, { keepPage: true })}
+        onPageSizeChange={(size) => patch({ size: size === DEFAULT_PAGE_SIZE ? null : size }, { keepPage: true })}
+        pageSizeOptions={PAGE_SIZES}
+      />
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-3">
       <Card>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <Stat value={postsTotalQuery.data?.total} label="原始动态" />
-          <Stat value={entriesTotalQuery.data?.total} label="结构化条目" />
-          <Stat value={health?.backlog.postsToExtract} label="待结构化动态" />
-          <Stat value={health?.backlog.imagesToOcr} label="待 OCR 图片" />
-          <Stat value={health?.events.unresolved} label="未恢复异常" />
-        </div>
-        <div className="mt-2 border-t border-line pt-2 text-[12px] text-muted">
-          {health?.meta ? (
-            <>
-              最近同步 {fmtRelative(health.meta.lastRunAt, now)}（{fmtCst(health.meta.lastRunAt)}，用时{' '}
-              {(health.meta.durationMs / 1000).toFixed(1)}s）
-              <br />
-              本次拉取：新增 {health.meta.added} 条 · 内容更新 {health.meta.updated} 条 · 未变化{' '}
-              {Math.max(0, health.meta.fetched - health.meta.added - health.meta.updated)} 条（合计{' '}
-              {health.meta.fetched} 条）
-              {health.meta.errors.length > 0 ? (
-                <div className="text-danger">拉取失败 {health.meta.errors.length} 项：{health.meta.errors.join('；')}</div>
-              ) : null}
-            </>
-          ) : (
-            '尚未拉取，等待定时任务'
-          )}
-        </div>
-      </Card>
-
-      {health && health.events.unresolved > 0 ? (
-        <div className="rounded-lg border border-[#f3d3ad] bg-[#fdf7ee] px-3 py-2 text-[13px] text-warn">
-          <strong>源异常</strong>：{health.events.unresolved} 条未恢复
-          {health.events.cookieSuspect > 0 ? `，其中 ${health.events.cookieSuspect} 条疑似 B站 cookie 失效` : ''}
-          {health.events.latest
-            ? `；最近异常 ${fmtRelative(health.events.latest.occurredAt, now)}（${fmtCst(health.events.latest.occurredAt)}）`
-            : ''}
-          <a className="ml-2" href="/app/health">
-            查看源健康页
-          </a>
-        </div>
-      ) : health ? (
-        <div className="rounded-lg border border-[#cfe8d5] bg-[#f2faf4] px-3 py-2 text-[13px] text-ok">
-          源状态正常，无未恢复异常。
-        </div>
-      ) : null}
-
-      <Card>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
           <label className="flex items-center gap-1">
             <span className="text-muted">游戏</span>
-            <select
-              className="rounded border border-line bg-surface px-1.5 py-1"
-              value={gameId}
-              onChange={(e) => patch({ gameId: e.target.value || null })}
-            >
+            <select className={fieldClass} value={gameId} onChange={(e) => patch({ gameId: e.target.value || null })}>
               <option value="">全部</option>
               {(gamesQuery.data?.items ?? []).map((g) => (
                 <option key={g.id} value={g.id}>
@@ -197,13 +165,9 @@ export function ListPage() {
             </select>
           </label>
 
-          <label className="flex items-center gap-1" title="仅筛选结构化数据，原始动态不受影响">
+          <label className="flex items-center gap-1">
             <span className="text-muted">分类</span>
-            <select
-              className="rounded border border-line bg-surface px-1.5 py-1"
-              value={type}
-              onChange={(e) => patch({ type: e.target.value || null })}
-            >
+            <select className={fieldClass} value={type} onChange={(e) => patch({ type: e.target.value || null })}>
               <option value="">全部</option>
               {ENTRY_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -217,36 +181,36 @@ export function ListPage() {
             <span className="text-muted">关键词</span>
             <input
               type="search"
-              className="w-[180px] rounded border border-line bg-surface px-1.5 py-1"
-              placeholder="活动名 / 标题 / 正文"
-              value={keyword}
-              onChange={(e) => patch({ q: e.target.value || null })}
+              className={`${fieldClass} w-[180px]`}
+              placeholder="活动名 / 标题 / 摘要"
+              value={keywordDraft}
+              onChange={(e) => setKeywordDraft(e.target.value)}
             />
           </label>
 
-          <label className="flex items-center gap-1">
-            <span className="text-muted">起</span>
+          <span className="flex items-center gap-1" title="筛选活动区间与所选日期范围有重叠的条目；留空表示不限">
+            <span className="text-muted">活动时间</span>
             <input
               type="date"
-              className="rounded border border-line bg-surface px-1.5 py-1"
+              className={fieldClass}
               value={fromDate}
               onChange={(e) => patch({ from: e.target.value || null })}
+              aria-label="活动时间起点"
             />
-          </label>
-          <label className="flex items-center gap-1">
-            <span className="text-muted">止</span>
+            <span className="text-muted">至</span>
             <input
               type="date"
-              className="rounded border border-line bg-surface px-1.5 py-1"
+              className={fieldClass}
               value={toDate}
               onChange={(e) => patch({ to: e.target.value || null })}
+              aria-label="活动时间终点"
             />
-          </label>
+          </span>
 
           <label className="flex items-center gap-1">
             <span className="text-muted">状态</span>
             <select
-              className="rounded border border-line bg-surface px-1.5 py-1"
+              className={fieldClass}
               value={statusParam}
               onChange={(e) => patch({ status: e.target.value === 'active' ? null : e.target.value })}
             >
@@ -258,109 +222,80 @@ export function ListPage() {
             </select>
           </label>
 
-          <label className="flex items-center gap-1" title="仅对结构化条目生效">
+          <label className="flex items-center gap-1">
             <span className="text-muted">排序</span>
             <select
-              className="rounded border border-line bg-surface px-1.5 py-1"
+              className={fieldClass}
               value={sort}
               onChange={(e) => patch({ sort: e.target.value === 'end' ? null : e.target.value })}
             >
-              <option value="end">结束时间</option>
-              <option value="start">开始时间</option>
-              <option value="duration">持续时间</option>
+              <option value="end">按结束时间</option>
+              <option value="start">按开始时间</option>
+              <option value="duration">按持续时间</option>
             </select>
           </label>
           <button
             type="button"
-            className="rounded border border-line px-2 py-1"
+            className={btnSecondary}
             title={order === 'asc' ? '当前升序（早→晚 / 短→长），点击切换为降序' : '当前降序（晚→早 / 长→短），点击切换为升序'}
             onClick={() => patch({ order: order === 'asc' ? 'desc' : null })}
           >
-            {order === 'asc' ? '↑' : '↓'}
+            {order === 'asc' ? '↑ 升序' : '↓ 降序'}
           </button>
-          <button type="button" className="rounded border border-line px-2 py-1" onClick={reset}>
-            重置
-          </button>
+          {hasFilter ? (
+            <button type="button" className={btnSecondary} onClick={() => setParams(new URLSearchParams(), { replace: true })}>
+              重置
+            </button>
+          ) : null}
         </div>
       </Card>
 
       {entryId ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#c7d8ef] bg-brand-weak px-3 py-2 text-[13px]">
-          正在定位单个条目 <code className="font-mono text-[12px]">{entryId}</code>
-          <button type="button" className="rounded border border-line bg-surface px-2 py-0.5" onClick={() => patch({ entry: null })}>
-            显示全部条目
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-brand/25 bg-brand-weak px-3 py-2 text-[13px]">
+          正在定位单个活动 <code className="font-mono text-[12px]">{entryId}</code>
+          <button type="button" className={btnSecondary} onClick={() => patch({ entry: null })}>
+            显示全部活动
           </button>
         </div>
       ) : null}
 
       <section>
-        <SectionTitle extra={entriesQuery.data ? `筛选后 ${entriesQuery.data.items.length} / 共 ${entriesQuery.data.total} 条` : undefined}>
-          结构化数据
+        <SectionTitle
+          extra={
+            entriesQuery.data ? `筛选后 ${entriesQuery.data.items.length} / 共 ${entriesQuery.data.total} 条` : undefined
+          }
+        >
+          活动
         </SectionTitle>
-        <Card>
-          <QueryState loading={entriesQuery.isLoading} error={entriesQuery.error} />
+        {pager}
+        <Card className="py-1">
+          <QueryState
+            loading={entriesQuery.isLoading}
+            error={entriesQuery.error}
+            rows={6}
+            onRetry={() => void entriesQuery.refetch()}
+          />
           {entriesQuery.data ? (
             entriesQuery.data.items.length > 0 ? (
-              <>
-                <ul className="divide-y divide-line">
-                  {entriesQuery.data.items.map((entry) => (
-                    <EntryCard key={entry.id} entry={entry} gameName={gameName(entry.gameId)} postById={postById} />
-                  ))}
-                </ul>
-                <div className="mt-2 flex justify-end">
-                  <Pagination
-                    page={page}
-                    pageSize={ENTRY_PAGE_SIZE}
-                    total={entriesQuery.data.total}
-                    onChange={(p) => patch({ page: p === 1 ? null : p })}
+              <ul className="divide-y divide-line">
+                {entriesQuery.data.items.map((entry) => (
+                  <EntryCard
+                    key={entry.id}
+                    entry={entry}
+                    gameName={gameName(entry.gameId)}
+                    postById={postById}
+                    now={now}
                   />
-                </div>
-              </>
+                ))}
+              </ul>
             ) : (
-              <Empty>暂无符合条件的条目</Empty>
+              <Empty>没有符合条件的活动</Empty>
             )
           ) : null}
         </Card>
       </section>
 
-      <section>
-        <SectionTitle extra={postsQuery.data ? `按发布时间倒序 · 共 ${postsQuery.data.total} 条` : undefined}>
-          原始动态
-        </SectionTitle>
-        <Card>
-          <QueryState loading={postsQuery.isLoading} error={postsQuery.error} />
-          {postsQuery.data ? (
-            postsQuery.data.items.length > 0 ? (
-              <>
-                <ul className="divide-y divide-line">
-                  {postsQuery.data.items.map((post) => (
-                    <PostCard key={post.id} post={post} gameName={gameName(post.gameId)} />
-                  ))}
-                </ul>
-                <div className="mt-2 flex justify-end">
-                  <Pagination
-                    page={postPage}
-                    pageSize={POST_PAGE_SIZE}
-                    total={postsQuery.data.total}
-                    onChange={(p) => patch({ postPage: p === 1 ? null : p })}
-                  />
-                </div>
-              </>
-            ) : (
-              <Empty>暂无动态</Empty>
-            )
-          ) : null}
-        </Card>
-      </section>
-    </div>
-  );
-}
-
-function Stat({ value, label }: { value: number | undefined; label: string }) {
-  return (
-    <div className="text-center">
-      <div className="text-[20px] font-semibold tabular-nums">{value ?? '—'}</div>
-      <div className="text-[12px] text-muted">{label}</div>
+      {pager}
     </div>
   );
 }

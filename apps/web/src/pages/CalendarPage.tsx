@@ -43,9 +43,9 @@ interface Span {
 }
 
 const POINT_STYLE: Record<PointClass, string> = {
-  start: 'bg-[#e5f0e2] text-[#1d6f2c]',
-  end: 'bg-[#fbe7e9] text-[#b0233a]',
-  reward: 'bg-[#fff1d6] text-[#8a5a00]',
+  start: 'bg-ok-weak text-ok',
+  end: 'bg-danger-weak text-danger',
+  reward: 'bg-warn-weak text-warn',
 };
 
 export function CalendarPage() {
@@ -126,7 +126,7 @@ export function CalendarPage() {
           <span className="text-muted">结束</span>
           <span className={`rounded px-1 ${POINT_STYLE.reward}`}>奖</span>
           <span className="text-muted">奖励截止</span>
-          <span className="rounded bg-[#e8eef7] px-1 text-[#33507a]">活动名</span>
+          <span className="rounded bg-neutral-weak px-1 text-ink-soft">活动名</span>
           <span className="text-muted">持续中（跨天）</span>
         </div>
 
@@ -194,7 +194,7 @@ export function CalendarPage() {
                 return (
                   <div key={`${seg.entryId}-${i}`} className="grid grid-cols-7 gap-x-1 px-1 pt-1">
                     <a
-                      href={`/app?entry=${encodeURIComponent(seg.entryId)}`}
+                      href={`/app/all?entry=${encodeURIComponent(seg.entryId)}`}
                       className="block truncate rounded px-1.5 text-[11px]"
                       style={{ gridColumn: `${seg.colStart + 1} / span ${seg.colspan}`, background: theme.bg, color: theme.fg, borderLeft: `3px solid ${theme.accent}` }}
                       title={seg.tip}
@@ -209,7 +209,7 @@ export function CalendarPage() {
 
               <div className="grid grid-cols-7 gap-x-1 p-1">
                 {week.days.map((day, col) => {
-                  if (day === null) return <div key={`pad-${week.index}-${col}`} className="min-h-[84px] rounded bg-[#fafafa]" />;
+                  if (day === null) return <div key={`pad-${week.index}-${col}`} className="min-h-[84px] rounded bg-bg-sunk" />;
                   const isExpanded = expanded.has(day.index);
                   const visible = isExpanded ? day.points : day.points.slice(0, MAX_PER_CELL);
                   const rest = day.points.length - MAX_PER_CELL;
@@ -218,14 +218,14 @@ export function CalendarPage() {
                   return (
                     <div
                       key={day.index}
-                      className={`min-h-[84px] cursor-pointer rounded border border-line px-1 pb-1 ${weekend ? 'bg-[#fbfaf6]' : 'bg-surface'} ${isToday ? 'ring-1 ring-inset ring-[#f5712c]' : ''}`}
+                      className={`min-h-[84px] cursor-pointer rounded border border-line px-1 pb-1 ${weekend ? 'bg-weekend' : 'bg-surface'} ${isToday ? 'ring-1 ring-inset ring-brand' : ''}`}
                       onClick={() => toggleDay(day.index)}
                     >
-                      <div className={`text-[11px] ${isToday ? 'font-semibold text-[#f5712c]' : 'text-muted'}`}>{day.index + 1}</div>
+                      <div className={`text-[11px] ${isToday ? 'font-semibold text-brand' : 'text-muted'}`}>{day.index + 1}</div>
                       {visible.map((p, i) => (
                         <a
                           key={`${p.entryId}-${p.cls}-${i}`}
-                          href={`/app?entry=${encodeURIComponent(p.entryId)}`}
+                          href={`/app/all?entry=${encodeURIComponent(p.entryId)}`}
                           className={`mt-0.5 block truncate rounded px-1 text-[11px] ${POINT_STYLE[p.cls]}`}
                           title={p.tip}
                           onClick={(e) => e.stopPropagation()}
@@ -256,14 +256,14 @@ export function CalendarPage() {
 
       {model.unanchored.length > 0 ? (
         <Card>
-          <h2 className="mb-1 border-l-4 border-[#f5712c] pl-2 text-[15px] font-semibold">
+          <h2 className="mb-1 border-l-4 border-brand pl-2 text-[15px] font-semibold">
             待锚定条目 <span className="text-[12px] font-normal text-muted">（{model.unanchored.length}，仅有引用型时间）</span>
           </h2>
           <ul className="divide-y divide-line text-[13px]">
             {model.unanchored.map((e) => (
               <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
                 <span className="text-muted">{gameName(e.gameId)}</span>
-                <a href={`/app?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
+                <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
                 <span className="text-[12px] text-muted">
                   {[e.startRef?.refText, e.endRef?.refText].filter(Boolean).map((t) => `［${t as string}］`).join(' ')}
                 </span>

@@ -4,18 +4,34 @@
  * 全局设计令牌（Tailwind v4 @theme，无 tailwind.config.js）。
  *
  * 只放语义色，不引组件库；游戏配色在 src/lib/game-theme.ts 里按 gameId 映射。
+ * 页面内不再出现十六进制色值，需要的颜色先在这里加令牌。
  */
 @theme {
+  /* 基础面 */
   --color-bg: #f6f7f9;
+  --color-bg-sunk: #fafafa;
   --color-surface: #ffffff;
   --color-line: #e6e8eb;
   --color-ink: #1f2328;
+  --color-ink-soft: #3d4653;
   --color-muted: #6b7280;
+
+  /* 品牌：唯一的高饱和强调色，用于行动入口与截止时间 */
   --color-brand: #1a5fb4;
   --color-brand-weak: #eef4fb;
+
+  /* 语义状态：仅表达数据状态，不表达紧迫度 */
   --color-ok: #15803d;
+  --color-ok-weak: #e7f5ec;
   --color-warn: #b45309;
+  --color-warn-weak: #fdf1e3;
   --color-danger: #b42323;
+  --color-danger-weak: #fbe9e9;
+  --color-neutral-weak: #f0f2f5;
+
+  /* 日历专用 */
+  --color-weekend: #f5f6f4;
+
   --font-sans: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
 }
 
@@ -36,5 +52,11 @@
   }
   summary {
     @apply cursor-pointer select-none;
+  }
+  /* 键盘导航的焦点环：全局只定义一次，组件不再各自覆盖 */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 }

@@ -67,6 +67,13 @@ export interface PostQuery {
   q?: string;
   from?: number;
   to?: number;
+  /** 图片数量闭区间（OCR 图片数筛选） */
+  imagesMin?: number;
+  imagesMax?: number;
+  /** never=从未成功提取，empty=提取过但没有排期，some=提取到至少一条 */
+  extracted?: 'never' | 'empty' | 'some';
+  sort?: 'published' | 'images' | 'entries';
+  order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

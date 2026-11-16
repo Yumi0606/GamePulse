@@ -97,7 +97,7 @@ export function HealthPage() {
           </div>
         ) : null}
         {health?.meta?.errors.length ? (
-          <div className="mt-2 rounded border border-[#f0c9c9] bg-[#fdf4f4] px-3 py-2 text-[12px] text-danger">
+          <div className="mt-2 rounded border border-danger/30 bg-danger-weak px-3 py-2 text-[12px] text-danger">
             <div className="font-medium">最近批次拉取失败 {health.meta.errors.length} 项</div>
             <ul className="mt-1 list-inside list-disc">
               {health.meta.errors.map((err) => (

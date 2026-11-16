@@ -1,20 +1,32 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 
 /**
- * 全站外壳：标题、四页导航、RSS 入口与旧版入口。
+ * 全站外壳：标题、四项用户导航、页脚（运维与订阅入口）。
  *
- * 旧版页面仍在根路径提供（过渡期共存）；这里只放链接，不做重定向。
+ * 导航链接透传 gameId / type / q，四个页面的筛选语义保持一致；
+ * 源健康与原始动态属于运维/核验入口，只放页脚，不与用户页面同级。
  */
 const NAV = [
-  { to: '/', label: '列表', end: true },
+  { to: '/', label: '即将到期', end: true },
+  { to: '/all', label: '全部活动' },
   { to: '/calendar', label: '日历' },
   { to: '/week', label: '周视图' },
-  { to: '/health', label: '源健康' },
 ];
 
+/** 跨页面保持的筛选参数 */
+const CARRIED_KEYS = ['gameId', 'type', 'q'] as const;
+
 export function Layout() {
+  const location = useLocation();
+  const carried = new URLSearchParams();
+  for (const key of CARRIED_KEYS) {
+    const value = new URLSearchParams(location.search).get(key);
+    if (value) carried.set(key, value);
+  }
+  const suffix = carried.toString() ? `?${carried}` : '';
+
   return (
-    <div className="min-h-full">
+    <div className="flex min-h-full flex-col">
       <header className="sticky top-0 z-40 border-b border-line bg-surface/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2.5">
           <span className="text-[16px] font-semibold tracking-tight">GamePulse</span>
@@ -22,7 +34,7 @@ export function Layout() {
             {NAV.map((item) => (
               <NavLink
                 key={item.to}
-                to={item.to}
+                to={`${item.to}${suffix}`}
                 end={item.end}
                 className={({ isActive }) =>
                   `rounded px-2.5 py-1 ${
@@ -34,27 +46,31 @@ export function Layout() {
               </NavLink>
             ))}
           </nav>
-          <span className="ml-auto flex items-center gap-3 text-[12px] text-muted">
-            <span>
-              RSS：
-              <a href="/rss/entries" target="_blank" rel="noreferrer">
-                结构化条目
-              </a>
-              <span className="px-1">·</span>
-              <a href="/rss/posts" target="_blank" rel="noreferrer">
-                原始动态
-              </a>
-            </span>
-            <span className="text-line">|</span>
-            <a href="/" title="旧版列表页（重构过渡期保留）">
-              旧版
+          <span className="ml-auto text-[12px] text-muted">
+            RSS：
+            <a href="/rss/entries" target="_blank" rel="noreferrer">
+              活动
+            </a>
+            <span className="px-1">·</span>
+            <a href="/rss/posts" target="_blank" rel="noreferrer">
+              动态
             </a>
           </span>
         </div>
       </header>
-      <main className="mx-auto max-w-[1440px] px-4 py-4">
+      <main className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-4">
         <Outlet />
       </main>
+      <footer className="mx-auto w-full max-w-[1440px] px-4 pb-6 pt-2 text-[12px] text-muted">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line pt-3">
+          <span>GamePulse · 数据来自各游戏官方社媒</span>
+          <Link to="/health">源健康</Link>
+          <Link to="/posts">原始动态</Link>
+          <a href="/" title="旧版列表页（重构过渡期保留）">
+            旧版
+          </a>
+        </div>
+      </footer>
     </div>
   );
 }

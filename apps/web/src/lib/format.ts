@@ -1,4 +1,4 @@
-import { fmtCst } from '@gamepulse/shared';
+import { cstStartOfDay, fmtCst } from '@gamepulse/shared';
 
 /**
  * 展示层时间/文本工具。
@@ -62,4 +62,36 @@ export function fmtDuration(sec: number): string {
   const days = sec / DAY_SEC;
   if (days >= 1) return `${Math.round(days * 10) / 10} 天`;
   return `${Math.round((sec / 3600) * 10) / 10} 小时`;
+}
+
+/** Unix 秒 → 北京时间自然日序号（用于按日比较，不受时分影响） */
+function cstDayIndex(unix: number): number {
+  return Math.floor((unix + CST_OFFSET_SEC) / DAY_SEC);
+}
+
+/** 两个时刻所在的北京时间自然日相差几天（to - from）：今天为 0，明天为 1 */
+export function cstDayDiff(fromSec: number, toSec: number): number {
+  return cstDayIndex(toSec) - cstDayIndex(fromSec);
+}
+
+/** 北京时间本周日 23:59:59 的 Unix 秒（周一为一周起点） */
+export function cstWeekEnd(nowSec: number): number {
+  const dayStart = cstStartOfDay(nowSec);
+  // getUTCDay：0=周日，1=周一；换算成「距离下一个周一还有几天」
+  const weekday = new Date((dayStart + CST_OFFSET_SEC) * 1000).getUTCDay();
+  const untilNextMonday = weekday === 0 ? 1 : 8 - weekday;
+  return dayStart + untilNextMonday * DAY_SEC - 1;
+}
+
+/**
+ * 倒计时文案：今天截止 / 明天截止 / 还剩 N 天 / 已截止。
+ * 跨过 30 天直接给日期，避免「还剩 214 天」这类无意义数字。
+ */
+export function fmtCountdown(deadlineSec: number, nowSec: number): string {
+  const diff = cstDayDiff(nowSec, deadlineSec);
+  if (diff < 0) return '已截止';
+  if (diff === 0) return '今天截止';
+  if (diff === 1) return '明天截止';
+  if (diff <= 30) return `还剩 ${diff} 天`;
+  return fmtCstDate(deadlineSec);
 }
