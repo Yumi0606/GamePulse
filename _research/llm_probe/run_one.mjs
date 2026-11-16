@@ -14,9 +14,9 @@
  *   --save     结果入库（默认 dry-run，不消耗幂等状态）。
  * 需先 pnpm build，并在 .env 配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL。
  */
-import { extractOnePost } from '../../dist/processing/extract.js';
-import { loadEntries } from '../../dist/storage/store.js';
-import { llmConfig } from '../../dist/processing/llm.js';
+import { extractOnePost } from '../../apps/server/dist/processing/extract.js';
+import { loadEntries } from '../../apps/server/dist/storage/store.js';
+import { llmConfig } from '../../apps/server/dist/processing/llm.js';
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {

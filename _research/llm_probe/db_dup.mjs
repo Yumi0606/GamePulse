@@ -3,8 +3,8 @@
  * 以及多来源条目与无来源条目的分布。
  * 用法：node _research/llm_probe/db_dup.mjs [gameId]（省略则统计全部游戏）
  */
-import { loadEntries } from '../../dist/storage/store.js';
-import { normalizeCanonicalName } from '../../dist/core/types.js';
+import { loadEntries } from '../../apps/server/dist/storage/store.js';
+import { normalizeCanonicalName } from '../../apps/server/dist/core/types.js';
 
 const gameId = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : undefined;
 const all = await loadEntries();

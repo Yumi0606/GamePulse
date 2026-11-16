@@ -1,6 +1,6 @@
 # \_research/CLAUDE.md — 探针脚本
 
-`_research/` 独立于 `src/`，直接调用 `dist/` 或读 `data/feed.db`，只用于验证，不参与服务运行。
+`_research/` 独立于 `apps/server/src/`，直接调用 `apps/server/dist/` 或读 `data/feed.db`，只用于验证，不参与服务运行。
 
 命名约定：`db_*` 离线查库（0 次外部调用），`probe_*` 离线验证模块逻辑，`run_*` 消耗 LLM，其余为辅助工具。
 
@@ -62,6 +62,6 @@ python _research/ocr_probe/probe.py <图片路径>
 - **先离线后在线**：能用 `db_dup.mjs` / `probe_recall.mjs` / `db_entries.mjs` 回答的问题，不调用 LLM 或 OCR。
 - 优先给现有脚本加参数，**不为一次验证新建脚本**；确需新建时带用法注释，验证完成后删除或并入现有脚本。
 - 禁止在 `_research/` 下留数据库副本、日志、截图、审查快照；临时产物写到系统临时目录，用完删除。
-- 脚本统一用 `node` 直跑（读 `dist/`），新增脚本不要再引入 tsx 依赖。
-- 展示验证使用用户共用的 3000 端口，规则见 `src/web/CLAUDE.md`。
+- 脚本统一用 `node` 直跑（读 `apps/server/dist/`，先 `pnpm build`），新增脚本不要再引入 tsx 依赖。
+- 展示验证使用用户共用的 3000 端口，规则见 `apps/server/src/web/CLAUDE.md`。
 

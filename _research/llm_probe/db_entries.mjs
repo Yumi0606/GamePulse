@@ -13,7 +13,7 @@
  *   --source  展开每条目的来源动态正文与 OCR（截断 25 行/图）。
  */
 import { DatabaseSync } from 'node:sqlite';
-import { normalizeImageUrl } from '../../dist/core/imageUrl.js';
+import { normalizeImageUrl } from '../../apps/server/dist/core/imageUrl.js';
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {

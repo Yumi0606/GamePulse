@@ -12,7 +12,7 @@
  *   --entries 打印以该动态为主来源的结构化条目。
  */
 import { DatabaseSync } from 'node:sqlite';
-import { normalizeImageUrl } from '../../dist/core/imageUrl.js';
+import { normalizeImageUrl } from '../../apps/server/dist/core/imageUrl.js';
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {

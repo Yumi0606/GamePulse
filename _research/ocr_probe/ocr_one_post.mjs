@@ -9,8 +9,8 @@
  *   --dry    只识别不写库，便于先确认效果再决定是否消耗一次落库机会。
  */
 import { DatabaseSync } from 'node:sqlite';
-import { recognizeImage } from '../../dist/processing/ocr.js';
-import { saveOcrRecord } from '../../dist/storage/store.js';
+import { recognizeImage } from '../../apps/server/dist/processing/ocr.js';
+import { saveOcrRecord } from '../../apps/server/dist/storage/store.js';
 
 const args = process.argv.slice(2);
 const postId = args[0];

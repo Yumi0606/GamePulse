@@ -9,10 +9,11 @@
  * 错误日志约定：catch 处用 log.error({ err: e }, '...') 传 Error 对象，保留堆栈。
  */
 import pino from 'pino';
+import { DEFAULT_LOG_FILE } from './paths.js';
 
 // 注意：本模块可能先于 env.ts 执行（ESM 依赖顺序），故直接读 process.env，
 // LOG_LEVEL/LOG_PRETTY/LOG_FILE 由入口文件最先 import core/env.js 保证 .env 已加载
-const LOG_FILE = process.env.LOG_FILE ?? 'logs/app.log';
+const LOG_FILE = process.env.LOG_FILE ?? DEFAULT_LOG_FILE;
 
 /** 输出流：文件（默认 logs/app.log）+ 美化控制台；都关闭时退化为无 transport */
 function buildTransport(): pino.TransportMultiOptions | undefined {

@@ -240,53 +240,102 @@ function describeSchedule(s: Schedule): string {
   }
 }
 
-/** 按调度方式安装一个定时器；daily 模式用自递归 setTimeout 锚定北京时间 0 点 */
-function installTimer(s: Schedule, tick: () => void): void {
+/** 单个循环的运行状态（健康接口读取） */
+export interface LoopStatus {
+  started: boolean;
+  schedule: string;
+  /** 最近一次开始执行时间，Unix 秒；null=尚未执行 */
+  lastRunAt: number | null;
+  /** 预计下次触发时间，Unix 秒；null=未启动 */
+  nextRunAt: number | null;
+}
+
+/** 两条循环的状态快照 */
+export interface SchedulerStatus {
+  fetch: LoopStatus;
+  process: LoopStatus;
+}
+
+const loopStates: Record<'fetch' | 'process', LoopStatus> = {
+  fetch: { started: false, schedule: '', lastRunAt: null, nextRunAt: null },
+  process: { started: false, schedule: '', lastRunAt: null, nextRunAt: null },
+};
+
+/** 当前循环状态快照；只读，供 /api/v1/health 展示扫描开关与下次触发时间 */
+export function schedulerStatus(): SchedulerStatus {
+  return { fetch: { ...loopStates.fetch }, process: { ...loopStates.process } };
+}
+
+/**
+ * 按调度方式安装一个定时器，返回立即执行的触发函数。
+ * daily 模式用自递归 setTimeout 锚定北京时间 0 点；每次触发后刷新 nextRunAt。
+ */
+function installTimer(s: Schedule, tick: () => void, state: LoopStatus): () => void {
+  const nowSec = (): number => Math.floor(Date.now() / 1000);
+  let job: CronJob | null = null;
+
+  const advance = (): void => {
+    if (s.type === 'cron') {
+      state.nextRunAt = job ? Math.floor(job.nextDate().toMillis() / 1000) : null;
+    } else if (s.type === 'interval') {
+      state.nextRunAt = nowSec() + Math.round(s.ms / 1000);
+    } else {
+      state.nextRunAt = Math.floor((Date.now() + msUntilMidnight()) / 1000);
+    }
+  };
+
+  const wrapped = (): void => {
+    state.lastRunAt = nowSec();
+    tick();
+    advance();
+  };
+
   switch (s.type) {
     case 'cron':
-      CronJob.from({
+      job = CronJob.from({
         cronTime: s.expr,
-        onTick: tick,
+        onTick: wrapped,
         timeZone: CRON_TZ,
         start: true,
       });
       break;
     case 'interval':
-      setInterval(tick, s.ms);
+      setInterval(wrapped, s.ms);
       break;
     case 'daily':
       // 触发后重新计算到下一个 0 点，避免漂移
       const loop = (): void => {
         setTimeout(() => {
-          tick();
+          wrapped();
           loop();
         }, msUntilMidnight());
       };
       loop();
       break;
   }
+  advance();
+  return wrapped;
 }
 
 /** 启动定时循环（不阻塞调用方）：拉取先立即执行一次；处理链启动即尝试（与拉取首轮互斥） */
 export function startScheduler(): void {
   const fs = fetchSchedule();
   const ps = processSchedule();
+  loopStates.fetch.schedule = describeSchedule(fs);
+  loopStates.process.schedule = describeSchedule(ps);
+  loopStates.fetch.started = true;
+  loopStates.process.started = true;
   log.info('定时拉取已启动 %s', describeSchedule(fs));
   log.info('处理链循环已启动 %s', describeSchedule(ps));
 
-  const fetchTick = (): void =>
-    guarded('拉取批次', async () => {
-      await runFetchOnce();
-    });
-  const processTick = (): void =>
-    guarded('处理批次', async () => {
-      await runProcessOnce();
-    });
+  const runFetch = installTimer(fs, () => guarded('拉取批次', async () => {
+    await runFetchOnce();
+  }), loopStates.fetch);
+  const runProcess = installTimer(ps, () => guarded('处理批次', async () => {
+    await runProcessOnce();
+  }), loopStates.process);
 
-  fetchTick();
-  installTimer(fs, fetchTick);
-
-  // 启动即尝试一次（与拉取首轮互斥，谁先抢到谁执行）
-  processTick();
-  installTimer(ps, processTick);
+  // 启动即执行：两条循环共用忙碌互斥，晚到的一轮会被跳过
+  runFetch();
+  runProcess();
 }

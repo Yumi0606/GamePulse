@@ -20,7 +20,7 @@ GamePulse 把这件事自动化：**拉取游戏官方 B站动态 → 图片 OCR
 | 崩坏：星穹铁道 | 1340190821 | `honkai-star-rail` |
 | 绝区零 | 1636034895 | `zenless-zone-zero` |
 
-新增游戏只需在 [src/core/games.ts](src/core/games.ts) 加一行；若需要专属分类规则，再在 [src/processing/gameRules.ts](src/processing/gameRules.ts) 加一条（未登记的游戏走通用词表）。接入新的社媒平台则实现一个 `SourceAdapter`（见 `src/sources/adapters/`）。`GAMES` 的数组顺序即周视图分组顺序：同厂商相邻，米哈游三款置于末尾。
+新增游戏只需在 [apps/server/src/core/games.ts](apps/server/src/core/games.ts) 加一行；若需要专属分类规则，再在 [apps/server/src/processing/gameRules.ts](apps/server/src/processing/gameRules.ts) 加一条（未登记的游戏走通用词表）。接入新的社媒平台则实现一个 `SourceAdapter`（见 `apps/server/src/sources/adapters/`）。`GAMES` 的数组顺序即周视图分组顺序：同厂商相邻，米哈游三款置于末尾。
 
 ## 它是怎么工作的
 
@@ -106,17 +106,20 @@ pnpm web
 ## 目录结构
 
 ```
-src/
-  core/         模型与基础设施：types / games / env / logger / imageUrl
+apps/server/src/
+  core/         模型与基础设施：types / games / env / logger / imageUrl / paths
   sources/      源接入：adapters/ + pipeline（拉取）+ dedup（去重）
   processing/   处理链：ocr / enrich（OCR 批处理）/ llm / extract（LLM 结构化）
                 + recall（召回）/ gameRules（游戏词表）/ semanticAnchor（语义锚定）
                 + maintenance（维护窗口回填）
   storage/      store.ts：SQLite 表（posts / ocr_records / entries / meta / events / maintenance_windows）
-  web/          server.ts（路由）+ page.ts（列表与日历）+ week.ts（周视图）
-                + rss.ts（RSS 生成）+ assets/（前端脚本与样式）
+  api/          Fastify + Zod：/api/v1/health、/meta、/games（后续 entries / posts）
+  web/          server.ts（Fastify 入口）+ legacy.ts（旧页面/RSS 路由）
+                + page.ts（列表与日历）+ week.ts（周视图）+ rss.ts（RSS 生成）+ assets/
   scheduler.ts  定时编排：拉取 → OCR → 结构化 → 时间回填
   index.ts      CLI 手动同步
+apps/web/       React 前端（路由 /app：列表 / 日历 / 周视图 / 源健康）
+packages/shared/ 前后端共享 DTO、Zod schema、枚举与 fmtCst
 ocr-service/    RapidOCR Python 侧车
 _research/      调研探针脚本（单条 LLM dry-run、OCR 状态机测试、历史动态注入）
 ```

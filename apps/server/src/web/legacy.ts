@@ -1,46 +1,46 @@
-// 必须最先 import：加载 .env，保证后续 logger/ocr/llm 等模块读到配置
-import '../core/env.js';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { GAMES } from '../core/games.js';
-import { startScheduler } from '../scheduler.js';
-import { installFatalHandlers, moduleLogger } from '../core/logger.js';
-import { loadPosts, loadEntries, loadMeta, listEvents, countUnresolvedEvents, countPendingExtract, countUnrecognizedImages, latestUnresolvedEvent, loadOcrRecords } from '../storage/store.js';
+import {
+  loadPosts,
+  loadEntries,
+  loadMeta,
+  loadOcrRecords,
+  listEvents,
+  countUnresolvedEvents,
+  countPendingExtract,
+  countUnrecognizedImages,
+  latestUnresolvedEvent,
+} from '../storage/store.js';
 import { buildGameRss, buildAggregatedRss, buildEntriesRss, buildSinglePostRss, buildSingleEntryRss } from './rss.js';
 import { renderPage, renderCalendar, renderHealth, parseMonth } from './page.js';
 import { renderWeek } from './week.js';
 
-const log = moduleLogger('web');
-
 /**
- * v1.5 Web 服务：展示层路由。
+ * 旧版展示层请求处理（重构过渡期保留）。
  *
- * 页面（列表/日历/源健康三种视图）：
- * - GET /                列表视图（概览 + 异常报告 + 筛选 + 结构化条目 + 原始动态；筛选由内联脚本就地过滤）
- * - GET /calendar        日历视图（按北京时间铺当月排期，?month=YYYY-MM 翻月）
- * - GET /health          源健康视图（拉取异常记录 + 自动恢复状态）
+ * 页面：
+ * - GET /                列表视图（概览 + 异常报告 + 筛选 + 结构化条目 + 原始动态）
+ * - GET /calendar        日历视图（?month=YYYY-MM 翻月）
+ * - GET /week?from=...   周视图
+ * - GET /health          源健康视图（旧版 HTML）
  *
- * RSS 订阅（原始动态与解析后条目分路径）：
- * - GET /rss/posts           原始动态聚合 RSS（全部游戏）
- * - GET /rss/posts/<gameId>  原始动态 RSS（单游戏）
- * - GET /rss/entries         结构化条目 RSS（全部游戏）
- * - GET /rss/entries/<gameId> 结构化条目 RSS（单游戏）
- * - GET /rss/post?id=<postId>   单条原始动态 RSS
- * - GET /rss/entry?id=<entryId> 单条结构化条目 RSS（entry id 含 / 与 :，故用查询参数）
+ * RSS（对外契约，永久保留）：
+ * - GET /rss/posts、/rss/posts/<gameId>
+ * - GET /rss/entries、/rss/entries/<gameId>
+ * - GET /rss/post?id=、/rss/entry?id=（entry id 含 / 与 :，无法作路径段）
  *
- * 静态资源：
- * - GET /assets/calendar.css  日历视图样式
- * - GET /assets/calendar.js   日历视图交互脚本
+ * 静态资源：/assets/{calendar.css,calendar.js,week.css,week.js}
  *
- * 数据只读本地存储（data/feed.db），新鲜度由定时任务保证；请求不实时拉取。
+ * 新前端迁完、线上观察期满后，本文件随 page.ts / week.ts / assets 一起删除；
+ * 在此之前禁止在此新增页面功能，只修 bug。
  */
+
 const PORT = Number(process.env.PORT ?? 3000);
-/** 只读模式：命令行传入 --view-only，或环境变量 WEB_ONLY=1；不启动定时拉取与处理链 */
-const VIEW_ONLY = process.argv.includes('--view-only') || process.env.WEB_ONLY === '1';
 const BASE = `http://localhost:${PORT}`;
 
 // 静态资源从源码目录读取：tsc 不拷贝 .js/.css，故运行时不依赖 dist。
-// dist/web/server.js 与 src/web/server.ts（tsx）两种运行方式均解析到 <项目根>/src/web/assets/。
+// dist/web/legacy.js 与 src/web/legacy.ts（tsx）两种运行方式均解析到 <项目根>/apps/server/src/web/assets/。
 // 每次请求按需读取磁盘，不缓存，便于本地开发时修改 CSS/JS 后刷新即生效。
 const ASSET_DIR = new URL('../../src/web/assets/', import.meta.url);
 const ASSET_TYPES: Record<string, string> = {
@@ -49,6 +49,7 @@ const ASSET_TYPES: Record<string, string> = {
   '/assets/week.css': 'text/css; charset=utf-8',
   '/assets/week.js': 'text/javascript; charset=utf-8',
 };
+
 function readAsset(path: string): { body: string; type: string } | null {
   const type = ASSET_TYPES[path];
   if (!type) return null;
@@ -56,7 +57,8 @@ function readAsset(path: string): { body: string; type: string } | null {
   return { body: readFileSync(new URL(file, ASSET_DIR), 'utf8'), type };
 }
 
-const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+/** 处理一个旧版请求；响应直接写入 res（调用方应先 hijack Fastify 的 reply） */
+export async function handleLegacyRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // 解析路径与查询（month 等参数）；只读本地存储
   const url = new URL(req.url ?? '/', BASE);
   const path = url.pathname;
@@ -89,9 +91,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
 
     if (path === '/week') {
-      const [entries, posts] = await Promise.all([loadEntries(), loadPosts()]);
+      const [entries, weekPosts] = await Promise.all([loadEntries(), loadPosts()]);
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(renderWeek(entries, posts, url.searchParams.get('from')));
+      res.end(renderWeek(entries, weekPosts, url.searchParams.get('from')));
       return;
     }
 
@@ -136,7 +138,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
 
-    // ---- RSS：单条（?id= 查询参数；entry id 含 / 与 : 无法作路径段） ----
+    // ---- RSS：单条（?id= 查询参数） ----
     if (path === '/rss/post') {
       const id = url.searchParams.get('id');
       const post = id ? posts.find((p) => p.id === id) : undefined;
@@ -161,23 +163,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
     res.end(`服务器错误：${(e as Error).message}`);
   }
-});
+}
 
 function notFound(res: ServerResponse, text: string): void {
   res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
   res.end(text);
 }
-
-server.listen(PORT, () => {
-  installFatalHandlers(); // 常驻服务进程级兜底：漏 catch 的 Promise 拒绝不再静默杀进程
-  log.info('Web 服务已启动 port=%d', PORT);
-  log.info('页面: GET / 列表视图 | GET /calendar?month=YYYY-MM 日历视图 | GET /week?from=YYYY-MM-DD 周视图 | GET /health 源健康');
-  log.info('RSS: /rss/posts 原始动态 | /rss/entries 结构化条目（均可追加 /<gameId>）| /rss/post?id= 与 /rss/entry?id= 单条');
-  // 启动定时拉取：立即执行一次，之后按间隔刷新本地存储。
-  // 只读模式（pnpm viewonly 或 WEB_ONLY=1）：只展示本地存储，不拉取、不跑 OCR/LLM。
-  if (VIEW_ONLY) {
-    log.info('只读模式：跳过定时拉取与处理链，仅展示本地数据');
-  } else {
-    startScheduler();
-  }
-});

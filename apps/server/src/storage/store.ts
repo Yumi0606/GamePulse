@@ -2,9 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import type { Entry, EntryPayload, Item, MaintenanceWindow, TimeRef } from '../core/types.js';
+import type { EntrySort, EntryStatus } from '@gamepulse/shared';
+import { cstStartOfDay } from '@gamepulse/shared';
 import { eventKey, normalizeCanonicalName } from '../core/types.js';
 import { normalizeImageUrl } from '../core/imageUrl.js';
 import { moduleLogger } from '../core/logger.js';
+import { DATA_DIR } from '../core/paths.js';
 
 const log = moduleLogger('store');
 
@@ -21,7 +24,6 @@ const log = moduleLogger('store');
  * 旧版单表 items（payload JSON 混装）首次访问自动迁移为 posts + ocr_records，表改名 items_v1 留档。
  */
 
-const DATA_DIR = path.resolve('data');
 const DB_FILE = path.join(DATA_DIR, 'feed.db');
 const LEGACY_ITEMS_FILE = path.join(DATA_DIR, 'items.json');
 const LEGACY_META_FILE = path.join(DATA_DIR, 'meta.json');
@@ -174,6 +176,11 @@ function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_entries_game ON entries(game_id, type, end_at);
     -- replaceEntriesForPost 按 post_id 全删，避免全表扫描
     CREATE INDEX IF NOT EXISTS idx_entries_post ON entries(post_id);
+    -- 列表默认按结束时间排序与区间重叠筛选
+    CREATE INDEX IF NOT EXISTS idx_entries_end ON entries(end_at);
+    CREATE INDEX IF NOT EXISTS idx_entries_start ON entries(start_at);
+    -- 动态列表全局按发布时间倒序
+    CREATE INDEX IF NOT EXISTS idx_posts_published ON posts(published_at DESC);
 
     -- 拉取批次统计（单行表：id 恒为 1）
     CREATE TABLE IF NOT EXISTS meta (
@@ -1143,6 +1150,214 @@ export async function loadEntries(): Promise<StoredEntry[]> {
 export async function listEntriesByGame(gameId: string): Promise<StoredEntry[]> {
   const rows = db.prepare('SELECT * FROM entries WHERE game_id = ?').all(gameId) as unknown as EntryRow[];
   return rows.map(rowToEntry);
+}
+
+/** 条目查询条件（API 层已完成校验与归一化，store 只拼 SQL） */
+export interface EntryQueryInput {
+  gameIds?: string[];
+  types?: string[];
+  statuses?: EntryStatus[];
+  /** 按条目 id 批量取（深链定位单个条目） */
+  ids?: string[];
+  /** 关键词：标题、摘要、规范名 LIKE 匹配 */
+  q?: string;
+  /** 活动区间重叠：条目 [start_at, end_at(空=常驻)] 与 [from, to] 相交 */
+  from?: number;
+  to?: number;
+  /** 奖励截止（payload.rewardEndAt）区间，日历按奖励截止取数用 */
+  rewardFrom?: number;
+  rewardTo?: number;
+  sort: EntrySort;
+  order: 'asc' | 'desc';
+  limit: number;
+  offset: number;
+}
+
+/**
+ * 分页查询结构化条目。
+ * 排序白名单只接受 EntrySort；每项保证 id 兜底，避免同值时分页抖动。
+ * 空值统一排在最后（与旧 loadEntries 的 (end_at IS NULL) 处理一致）。
+ */
+export async function queryEntries(
+  input: EntryQueryInput,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): Promise<{ items: StoredEntry[]; total: number }> {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  const marks = (n: number): string => new Array(n).fill('?').join(',');
+
+  if (input.gameIds?.length) {
+    where.push(`game_id IN (${marks(input.gameIds.length)})`);
+    params.push(...input.gameIds);
+  }
+  if (input.types?.length) {
+    where.push(`type IN (${marks(input.types.length)})`);
+    params.push(...input.types);
+  }
+  if (input.ids?.length) {
+    where.push(`id IN (${marks(input.ids.length)})`);
+    params.push(...input.ids);
+  }
+  if (input.q) {
+    const like = `%${input.q}%`;
+    where.push(
+      `(title LIKE ? OR json_extract(payload, '$.summary') LIKE ? OR json_extract(payload, '$.canonicalName') LIKE ?)`,
+    );
+    params.push(like, like, like);
+  }
+  if (input.to !== undefined) {
+    where.push('start_at IS NOT NULL AND start_at <= ?');
+    params.push(input.to);
+  }
+  if (input.from !== undefined) {
+    where.push('(end_at IS NULL OR end_at >= ?)');
+    params.push(input.from);
+  }
+  if (input.rewardFrom !== undefined || input.rewardTo !== undefined) {
+    where.push(`json_extract(payload, '$.rewardEndAt') IS NOT NULL`);
+    if (input.rewardFrom !== undefined) {
+      where.push(`json_extract(payload, '$.rewardEndAt') >= ?`);
+      params.push(input.rewardFrom);
+    }
+    if (input.rewardTo !== undefined) {
+      where.push(`json_extract(payload, '$.rewardEndAt') <= ?`);
+      params.push(input.rewardTo);
+    }
+  }
+  if (input.statuses?.length) {
+    // 与 shared 的 entryStatus 同规则：ended 以北京时间当日 0 点为界
+    const dayStart = cstStartOfDay(nowSec);
+    const ors: string[] = [];
+    const statusParams: (string | number)[] = [];
+    for (const s of input.statuses) {
+      if (s === 'not-started') {
+        ors.push('(start_at IS NOT NULL AND start_at > ?)');
+        statusParams.push(nowSec);
+      } else if (s === 'ongoing') {
+        ors.push('(start_at IS NOT NULL AND start_at <= ? AND (end_at IS NULL OR end_at >= ?))');
+        statusParams.push(nowSec, dayStart);
+      } else if (s === 'ended') {
+        ors.push('(start_at IS NOT NULL AND end_at IS NOT NULL AND end_at < ?)');
+        statusParams.push(dayStart);
+      } else {
+        ors.push('(start_at IS NULL)');
+      }
+    }
+    where.push(`(${ors.join(' OR ')})`);
+    params.push(...statusParams);
+  }
+
+  const dir = input.order === 'asc' ? 'ASC' : 'DESC';
+  let nullFlag: string;
+  let key: string;
+  switch (input.sort) {
+    case 'start':
+      nullFlag = '(start_at IS NULL)';
+      key = 'start_at';
+      break;
+    case 'published':
+      nullFlag = '(published_at IS NULL)';
+      key = 'published_at';
+      break;
+    case 'duration':
+      nullFlag = '(start_at IS NULL OR end_at IS NULL)';
+      key = '(end_at - start_at)';
+      break;
+    default:
+      nullFlag = '(end_at IS NULL)';
+      key = 'end_at';
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const total = Number(
+    (db.prepare(`SELECT COUNT(*) AS n FROM entries ${whereSql}`).get(...params) as { n: number }).n,
+  );
+  const rows = db
+    .prepare(`SELECT * FROM entries ${whereSql} ORDER BY ${nullFlag} ASC, ${key} ${dir}, id ${dir} LIMIT ? OFFSET ?`)
+    .all(...params, input.limit, input.offset) as unknown as EntryRow[];
+  return { items: rows.map(rowToEntry), total };
+}
+
+/** 动态查询条件 */
+export interface PostQueryInput {
+  gameIds?: string[];
+  /** 按动态 id 批量取（列表页解析来源标题用） */
+  ids?: string[];
+  q?: string;
+  from?: number;
+  to?: number;
+  limit: number;
+  offset: number;
+}
+
+/** 分页查询原始动态（固定按发布时间倒序，id 兜底） */
+export async function queryPosts(input: PostQueryInput): Promise<{ items: StoredPost[]; total: number }> {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (input.gameIds?.length) {
+    where.push(`game_id IN (${new Array(input.gameIds.length).fill('?').join(',')})`);
+    params.push(...input.gameIds);
+  }
+  // 按 id 批量取：列表页据此把条目的来源动态 id 解析成标题，避免逐条请求
+  if (input.ids?.length) {
+    where.push(`id IN (${new Array(input.ids.length).fill('?').join(',')})`);
+    params.push(...input.ids);
+  }
+  if (input.q) {
+    const like = `%${input.q}%`;
+    where.push('(title LIKE ? OR description LIKE ?)');
+    params.push(like, like);
+  }
+  if (input.from !== undefined) {
+    where.push('published_at >= ?');
+    params.push(input.from);
+  }
+  if (input.to !== undefined) {
+    where.push('published_at <= ?');
+    params.push(input.to);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const total = Number(
+    (db.prepare(`SELECT COUNT(*) AS n FROM posts ${whereSql}`).get(...params) as { n: number }).n,
+  );
+  const rows = db
+    .prepare(`SELECT * FROM posts ${whereSql} ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...params, input.limit, input.offset) as unknown as PostRow[];
+  return { items: rows.map(rowToPost), total };
+}
+
+/** 单张图片的 OCR 状态（missing=尚无记录） */
+export interface OcrImageState {
+  imageUrl: string;
+  status: 'ok' | 'failed' | 'missing';
+  text: string;
+  attempts: number;
+  lastError: string | null;
+}
+
+/**
+ * 按动态的图片列表读取 OCR 明细；动态不存在返回 null。
+ * OCR 记录按图片 URL 全局幂等，故此处以 posts.images 为主表左连接，未被其他动态引用过的图也能取到。
+ */
+export async function loadOcrForPost(postId: string): Promise<OcrImageState[] | null> {
+  const row = db.prepare('SELECT images FROM posts WHERE id = ?').get(postId) as
+    | { images: string | null }
+    | undefined;
+  if (!row) return null;
+  const images = row.images ? (JSON.parse(row.images) as string[]) : [];
+  const sel = db.prepare('SELECT status, text, attempts, last_error FROM ocr_records WHERE image_url = ?');
+  return images.map((imageUrl) => {
+    const rec = sel.get(imageUrl) as
+      | { status: string; text: string; attempts: number; last_error: string | null }
+      | undefined;
+    if (!rec) return { imageUrl, status: 'missing' as const, text: '', attempts: 0, lastError: null };
+    return {
+      imageUrl,
+      status: rec.status as 'ok' | 'failed',
+      text: rec.text,
+      attempts: rec.attempts,
+      lastError: rec.last_error,
+    };
+  });
 }
 
 // ==================== 维护窗口（引用型时间回填） ====================

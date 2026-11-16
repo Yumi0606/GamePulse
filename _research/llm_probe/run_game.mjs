@@ -15,8 +15,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { extractOnePost } from '../../dist/processing/extract.js';
-import { loadEntries } from '../../dist/storage/store.js';
+import { extractOnePost } from '../../apps/server/dist/processing/extract.js';
+import { loadEntries } from '../../apps/server/dist/storage/store.js';
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {

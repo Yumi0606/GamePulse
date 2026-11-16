@@ -8,8 +8,8 @@
  * 默认关键词取动态正文中的「」引号内容；游戏 id 从 postId 前缀推导。
  */
 import { DatabaseSync } from 'node:sqlite';
-import { recallCandidates } from '../../dist/processing/recall.js';
-import { loadOcrTexts } from '../../dist/storage/store.js';
+import { recallCandidates } from '../../apps/server/dist/processing/recall.js';
+import { loadOcrTexts } from '../../apps/server/dist/storage/store.js';
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {

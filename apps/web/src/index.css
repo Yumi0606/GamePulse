@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/**
+ * 全局设计令牌（Tailwind v4 @theme，无 tailwind.config.js）。
+ *
+ * 只放语义色，不引组件库；游戏配色在 src/lib/game-theme.ts 里按 gameId 映射。
+ */
+@theme {
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-line: #e6e8eb;
+  --color-ink: #1f2328;
+  --color-muted: #6b7280;
+  --color-brand: #1a5fb4;
+  --color-brand-weak: #eef4fb;
+  --color-ok: #15803d;
+  --color-warn: #b45309;
+  --color-danger: #b42323;
+  --font-sans: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-ink font-sans text-[14px];
+  }
+  a {
+    @apply text-brand no-underline;
+  }
+  a:hover {
+    @apply underline;
+  }
+  summary {
+    @apply cursor-pointer select-none;
+  }
+}

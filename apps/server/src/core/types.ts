@@ -2,10 +2,13 @@
  * 标准数据模型（v1.5）。
  * 与《调研报告-活动数据结构》的统一 Item 模型对齐；
  * 拆分产物（entries）覆盖可排期大类，NEWS 留在 posts 表。
+ *
+ * 枚举定义在 @gamepulse/shared，前后端共用同一份，避免两边枚举漂移。
  */
+import type { EntryType as SharedEntryType, ItemType as SharedItemType } from '@gamepulse/shared';
 
 /** 条目大类（全量枚举，与调研报告 §2 对齐） */
-export type ItemType = 'NEWS' | 'ACTIVITY' | 'GACHA' | 'SHOP' | 'COLLAB' | 'ANNOUNCEMENT';
+export type ItemType = SharedItemType;
 
 /** 游戏配置 */
 export interface Game {
@@ -54,16 +57,10 @@ export interface SourceAdapter {
 }
 
 /** 结构化条目大类：NEWS 不入 entries（posts 已覆盖展示），entries 只收"可排期"的大类 */
-export type EntryType = Exclude<ItemType, 'NEWS'>;
+export type EntryType = SharedEntryType;
 
-/** 条目大类的中文展示标签（展示层与 RSS 共用） */
-export const ENTRY_TYPE_LABEL: Record<EntryType, string> = {
-  ACTIVITY: '活动',
-  GACHA: '卡池',
-  SHOP: '商店',
-  COLLAB: '联动',
-  ANNOUNCEMENT: '公告',
-};
+/** 条目大类的中文展示标签（展示层与 RSS 共用，定义在共享包） */
+export { ENTRY_TYPE_LABEL } from '@gamepulse/shared';
 
 /** 图片（调研报告 §4 Image） */
 export interface Image {

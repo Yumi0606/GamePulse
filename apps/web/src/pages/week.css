@@ -1,0 +1,210 @@
+/* 周视图甘特图样式（仅 /app/week 使用） */
+
+.gantt-container {
+  overflow: auto;
+  position: relative;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  background: #eef0f3;
+}
+
+/* 时间轴宽度由组件按精度与范围计算；相对定位为今天线提供包含块 */
+.gantt-timeline {
+  position: relative;
+  background: #fff;
+  overflow: clip;
+  box-shadow: 2px 0 0 #c2c8d0;
+  --cell-width: 80px;
+  --row-height: 32px;
+  --group-header-height: 28px;
+  --timeline-header-height: 32px;
+}
+
+.gantt-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--timeline-header-height);
+  background: #fafafa;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  align-items: stretch;
+}
+.gantt-header-cell {
+  flex: 0 0 var(--cell-width);
+  border-right: 1px solid #eee;
+  font-size: 11px;
+  color: #666;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 2px 0;
+  line-height: 1.2;
+}
+.gantt-header-cell.weekend {
+  background: #fbfaf6;
+}
+.gantt-header-cell.today {
+  background: #fff3e0;
+  color: #f5712c;
+  font-weight: 600;
+}
+
+/* 分组标题：sticky top+left；宽度收缩到文字宽度，右侧灰底用伪元素补齐 */
+.gantt-group-header {
+  position: sticky;
+  top: var(--timeline-header-height);
+  left: 0;
+  z-index: 25;
+  width: fit-content;
+  height: var(--group-header-height);
+  background: var(--group-bg, #f0f0f0);
+  border-bottom: 1px solid #ccc;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+}
+.gantt-group-header:hover {
+  filter: brightness(0.97);
+}
+.gantt-group-header::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 100vw;
+  background: var(--group-bg, #f0f0f0);
+  border-bottom: 1px solid #ccc;
+}
+.gantt-group-header .gantt-fold {
+  margin-right: 5px;
+  font-size: 10px;
+  color: #666;
+}
+.gantt-group-header .count {
+  color: #888;
+  font-weight: normal;
+  margin-left: 6px;
+  font-size: 12px;
+}
+.gantt-group-body.is-collapsed {
+  display: none;
+}
+
+/* 活动行：行内网格底纹，色条正常流定位 */
+.gantt-row {
+  position: relative;
+  height: var(--row-height);
+  border-bottom: 1px solid #f3f3f3;
+  background-image: linear-gradient(to right, #f5f5f5 1px, transparent 1px);
+  background-size: var(--cell-width) 100%;
+}
+.gantt-row:hover {
+  background-color: #fafafa;
+}
+
+.gantt-bar-fill {
+  position: relative;
+  height: calc(var(--row-height) - 6px);
+  margin-top: 3px;
+  border-radius: 3px;
+  min-width: 2px;
+  box-sizing: border-box;
+  overflow: visible;
+  cursor: pointer;
+}
+.gantt-bar-fill.no-start,
+.gantt-bar-fill.clip-start {
+  border-left: 2px dashed #999;
+}
+.gantt-bar-fill.clip-end,
+.gantt-bar-fill.open-end {
+  background-image: linear-gradient(to right, rgba(255, 255, 255, 0) 72%, rgba(255, 255, 255, 0.6) 100%);
+}
+.gantt-bar-fill.clip-end::after,
+.gantt-bar-fill.open-end::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid rgba(255, 255, 255, 0.95);
+  transform: translateY(-50%);
+}
+.gantt-bar-fill.state-future {
+  opacity: 0.45;
+}
+.gantt-bar-fill.state-active {
+  opacity: 1;
+}
+.gantt-bar-fill.state-ended {
+  background-color: #bbb !important;
+  opacity: 0.7;
+}
+
+/* 活动名在色条内部 sticky 到视口左缘；宽度收缩到内容宽度才能触发横向 sticky */
+.gantt-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: fit-content;
+  max-width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.gantt-name {
+  font-size: 12px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.gantt-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 今天线：纵向 sticky 贴在表头下，横向按 margin-left 定位 */
+.gantt-today-line {
+  position: sticky;
+  top: var(--timeline-header-height);
+  z-index: 26;
+  width: 2px;
+  height: calc(var(--gantt-h, 400px) - var(--timeline-header-height));
+  margin-bottom: calc((var(--gantt-h, 400px) - var(--timeline-header-height)) * -1);
+  background: #e01b24;
+  pointer-events: none;
+}
+
+.gantt-empty {
+  padding: 40px;
+  text-align: center;
+  color: #999;
+  font-size: 14px;
+}
