@@ -16,6 +16,14 @@
 - 表结构变更走 `ensureColumn` 幂等迁移（启动时检测补列），不要删旧表。
 - 旧表 `items_v1` 是 v1 留档，勿删勿写。
 
+## 积压计数口径
+
+健康接口的积压只统计**仍会进入队列**的量，终态单独计数，避免显示的数字永远降不到 0：
+
+- 待 OCR 图片（`countOcrImageBacklog`）：无记录或 `failed` 且 attempts 未达 `OCR_MAX_ATTEMPTS`；达上限的死图计入 `deadImages`。
+- 待结构化动态（`countExtractBacklog`）：结果过期、`extract_attempts` 未达 `EXTRACT_MAX_ATTEMPTS`，且引用的图片已全部到达终态（与 `listPostsToExtract` 入队条件一致）；达上限的计入 `abandonedPosts`。
+- 尝试上限统一从 `core/env.ts` 的 `ocrMaxAttempts()` / `extractMaxAttempts()` 读取，队列与计数不得各写一份解析。
+
 ## 条目身份与合并
 
 - `canonicalName` 是跨动态合并键，归一化只去空白与统一标点（`normalizeCanonicalName`），展示仍用原值；活动身份判定用 `eventKey`（再剥离首尾模板词，完全相等才合并）。

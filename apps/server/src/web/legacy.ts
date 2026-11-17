@@ -8,8 +8,8 @@ import {
   loadOcrRecords,
   listEvents,
   countUnresolvedEvents,
-  countPendingExtract,
-  countUnrecognizedImages,
+  countExtractBacklog,
+  countOcrImageBacklog,
   latestUnresolvedEvent,
 } from '../storage/store.js';
 import { buildGameRss, buildAggregatedRss, buildEntriesRss, buildSinglePostRss, buildSingleEntryRss } from './rss.js';
@@ -75,11 +75,17 @@ export async function handleLegacyRequest(req: IncomingMessage, res: ServerRespo
 
     // ---- 页面 ----
     if (path === '/') {
-      const [meta, entries, unresolved, pendingExtract, unrecognizedImages, latestEvent, ocr] = await Promise.all([
-        loadMeta(), loadEntries(), countUnresolvedEvents(), countPendingExtract(), countUnrecognizedImages(), latestUnresolvedEvent(), loadOcrRecords(),
+      const [meta, entries, unresolved, extractBacklog, ocrBacklog, latestEvent, ocr] = await Promise.all([
+        loadMeta(), loadEntries(), countUnresolvedEvents(), countExtractBacklog(), countOcrImageBacklog(), latestUnresolvedEvent(), loadOcrRecords(),
       ]);
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(renderPage({ posts, meta, entries, unresolved, pendingExtract, unrecognizedImages, latestEvent, ocr }));
+      res.end(renderPage({
+        posts, meta, entries,
+        unresolved,
+        pendingExtract: extractBacklog.pending,
+        unrecognizedImages: ocrBacklog.pending,
+        latestEvent, ocr,
+      }));
       return;
     }
 

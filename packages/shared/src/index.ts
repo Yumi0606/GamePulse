@@ -127,12 +127,16 @@ export const HealthDto = z.object({
     enabled: z.number().int(),
     total: z.number().int(),
   }),
-  /** 处理链积压 */
+  /** 处理链积压：只统计仍会进入队列的量，终态（永久失败）单独计数 */
   backlog: z.object({
-    /** 等待 LLM 结构化的动态数 */
+    /** 等待 LLM 结构化的动态数（尝试次数未达上限，且引用的图片已全部到达终态） */
     postsToExtract: z.number().int(),
-    /** 等待 OCR 的图片数 */
+    /** 等待 OCR 的图片数（不含永久失败已放弃的图片） */
     imagesToOcr: z.number().int(),
+    /** 永久失败的图片数：识别失败次数达上限，已不再重试 */
+    deadImages: z.number().int(),
+    /** 已放弃结构化的动态数：提取失败次数达上限，已不再重试 */
+    abandonedPosts: z.number().int(),
   }),
   events: z.object({
     unresolved: z.number().int(),

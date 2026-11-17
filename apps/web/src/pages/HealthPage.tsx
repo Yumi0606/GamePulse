@@ -72,8 +72,26 @@ export function HealthPage() {
               value={`${health.games.enabled} / ${health.games.total}`}
               hint="停用游戏不参与拉取"
             />
-            <Field label="待结构化动态" value={health.backlog.postsToExtract} />
-            <Field label="待 OCR 图片" value={health.backlog.imagesToOcr} />
+            <Field
+              label="待结构化动态"
+              value={health.backlog.postsToExtract}
+              hint="引用的图片全部到达终态后才入队"
+            />
+            <Field label="待 OCR 图片" value={health.backlog.imagesToOcr} hint="不含永久失败的图片" />
+            {health.backlog.deadImages > 0 ? (
+              <Field
+                label="永久失败图片"
+                value={<span className="text-warn">{health.backlog.deadImages}</span>}
+                hint="识别次数达上限，已不再重试"
+              />
+            ) : null}
+            {health.backlog.abandonedPosts > 0 ? (
+              <Field
+                label="已放弃动态"
+                value={<span className="text-warn">{health.backlog.abandonedPosts}</span>}
+                hint="结构化失败次数达上限，已不再重试"
+              />
+            ) : null}
             <Field
               label="未恢复异常"
               value={

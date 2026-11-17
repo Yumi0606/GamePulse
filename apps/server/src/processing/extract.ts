@@ -5,7 +5,7 @@ import { chatJSON, llmConfig, llmEnabled, LlmInfraError } from './llm.js';
 import { gameRuleFor, normalizeCategory } from './gameRules.js';
 import { recallCandidates, type RecallCandidate } from './recall.js';
 import { GAMES } from '../core/games.js';
-import { envNum, envStr } from '../core/env.js';
+import { envNum, envStr, extractMaxAttempts } from '../core/env.js';
 import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('extract');
@@ -24,8 +24,6 @@ const log = moduleLogger('extract');
 
 /** 单批最多送 LLM 的动态条数 */
 const BATCH_LIMIT = () => envNum('LLM_BATCH_LIMIT', 10);
-/** 单条动态最大尝试次数 */
-const MAX_ATTEMPTS = () => envNum('EXTRACT_MAX_ATTEMPTS', 3);
 /** 失败重试冷却（秒）：刚失败过的动态在冷却期内不再尝试（默认 300s，0=不冷却） */
 const RETRY_COOLDOWN = () => envNum('LLM_RETRY_COOLDOWN', 300);
 /** 连续基础设施失败达该次数即熔断本批剩余（服务大概率不可用） */
@@ -412,8 +410,12 @@ async function processPost(
 }> {
   const user = await buildUserContent(post, gameNames[post.gameId] ?? post.gameId);
   if (!user) {
-    // 正文与 OCR 均为空，无从结构化：标记跳过避免反复进入队列
-    if (save) await markExtracted(post.id, 0);
+    // 正文与 OCR 均为空，无从结构化：清空该动态的旧条目再标记已处理，
+    // 保证 entry_count=0 与 entries 表实际内容一致（否则旧条目残留、计数却归零）
+    if (save) {
+      await replaceEntriesForPost(post.id, []);
+      await markExtracted(post.id, 0);
+    }
     return { status: 'skipped', entries: [], user };
   }
   // 与排期无关的动态由 Prompt 规则判定为 0 条，不在代码侧按关键词拦截：
@@ -474,10 +476,10 @@ export async function extractEntries(
   log.info('LLM 结构化开始 model=%s', llmConfig());
 
   const cooldown = RETRY_COOLDOWN();
-  const candidates = await listPostsToExtract(MAX_ATTEMPTS(), cooldown, order);
+  const candidates = await listPostsToExtract(extractMaxAttempts(), cooldown, order);
   const pending = candidates.slice(0, BATCH_LIMIT());
   const t0 = Date.now();
-  log.info('待结构化动态 pending=%d batchLimit=%d maxAttempts=%d cooldown=%ds order=%s', candidates.length, BATCH_LIMIT(), MAX_ATTEMPTS(), cooldown, order);
+  log.info('待结构化动态 pending=%d batchLimit=%d maxAttempts=%d cooldown=%ds order=%s', candidates.length, BATCH_LIMIT(), extractMaxAttempts(), cooldown, order);
 
   let processed = 0;
   let skipped = 0;

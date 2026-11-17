@@ -3,8 +3,8 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { HealthDto } from '@gamepulse/shared';
 import { GAMES } from '../core/games.js';
 import {
-  countPendingExtract,
-  countUnrecognizedImages,
+  countExtractBacklog,
+  countOcrImageBacklog,
   countUnresolvedEvents,
   latestUnresolvedEvent,
   loadMeta,
@@ -22,10 +22,10 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
     '/health',
     { schema: { response: { 200: HealthDto } } },
     async () => {
-      const [meta, postsToExtract, imagesToOcr, unresolved, latest] = await Promise.all([
+      const [meta, extractBacklog, ocrBacklog, unresolved, latest] = await Promise.all([
         loadMeta(),
-        countPendingExtract(),
-        countUnrecognizedImages(),
+        countExtractBacklog(),
+        countOcrImageBacklog(),
         countUnresolvedEvents(),
         latestUnresolvedEvent(),
       ]);
@@ -42,7 +42,12 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
           enabled: GAMES.filter((g) => g.enabled).length,
           total: GAMES.length,
         },
-        backlog: { postsToExtract, imagesToOcr },
+        backlog: {
+          postsToExtract: extractBacklog.pending,
+          imagesToOcr: ocrBacklog.pending,
+          deadImages: ocrBacklog.dead,
+          abandonedPosts: extractBacklog.abandoned,
+        },
         events: {
           unresolved: unresolved.total,
           cookieSuspect: unresolved.cookieSuspect,

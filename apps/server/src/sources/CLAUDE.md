@@ -5,7 +5,7 @@
 ## 结构
 
 - `adapters/rsshubBilibili.ts`：当前唯一适配器，走自建 RSSHub 的 B站动态路由。
-- `pipeline.ts`：`runPipeline()` 逐游戏并发拉取 → 汇总 → `dedup()`；单游戏失败不阻断其他游戏，失败写 `events` 表（kind 分类 + cookie 失效特征打标），后续成功且有数据时自动标记恢复。
+- `pipeline.ts`：`runPipeline()` 逐游戏并发拉取 → 汇总 → `dedup()`；单游戏失败不阻断其他游戏，失败写 `events` 表（kind 分类 + cookie 失效特征打标），后续成功且有数据时自动标记恢复。同一游戏同一类故障已有未恢复事件时只刷新该行（最近发生时间与内容），不新增行，避免"未恢复异常"计数按调度间隔膨胀。
 - `dedup.ts`：首选系统 id（`{gameId}:{type}:{源内id}`）去重，兜底指纹 `{gameId}|{去空白标题}|{publishedAt}`；命中时保留字段更完整的一条。
 
 ## 接入新源 / 新游戏

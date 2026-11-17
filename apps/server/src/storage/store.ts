@@ -7,6 +7,7 @@ import { cstStartOfDay } from '@gamepulse/shared';
 import { eventKey, normalizeCanonicalName } from '../core/types.js';
 import { normalizeImageUrl } from '../core/imageUrl.js';
 import { moduleLogger } from '../core/logger.js';
+import { extractMaxAttempts, ocrMaxAttempts } from '../core/env.js';
 import { DATA_DIR } from '../core/paths.js';
 
 const log = moduleLogger('store');
@@ -189,7 +190,9 @@ function openDb(): DatabaseSync {
     );
 
     -- 源健康事件：拉取层异常记录（供 Web 异常页与主页通知）。
-    -- 生命周期：发生（resolved_at 为 NULL）→ 同一游戏后续某轮拉取成功且有数据时自动标记恢复
+    -- 生命周期：发生（resolved_at 为 NULL）→ 同一游戏后续某轮拉取成功且有数据时自动标记恢复。
+    -- 同一游戏同一类故障只保留一条未恢复事件：重复发生时刷新该行（occurred_at 记为最近一次发生时间），
+    -- 避免按调度间隔累积行数、把"未恢复异常"计数撑成发生次数。
     CREATE TABLE IF NOT EXISTS events (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       game_id     TEXT,                       -- 所属游戏标识；NULL=系统级事件（预留给非源类异常）
@@ -197,7 +200,7 @@ function openDb(): DatabaseSync {
       summary     TEXT NOT NULL,              -- 一行摘要（如 "拉取 XX 动态失败：HTTP 503"）
       detail      TEXT,                       -- 原始错误文本（如 RSSHub 错误页的 Error Message），截断存储
       is_cookie   INTEGER NOT NULL DEFAULT 0, -- 疑似 B站 cookie 失效：错误文本命中 -101/账号未登录/SESSDATA/cookie 特征
-      occurred_at INTEGER NOT NULL,           -- 发生时间，Unix 秒
+      occurred_at INTEGER NOT NULL,           -- 最近一次发生时间，Unix 秒（同一未恢复事件重复发生只刷新此列）
       resolved_at INTEGER                  -- 恢复时间，Unix 秒；NULL=未恢复
     );
     -- 未恢复集合（主页通知计数）与异常页时间倒序列表共用
@@ -539,6 +542,9 @@ export async function saveMeta(meta: FetchMeta): Promise<void> {
 
 /**
  * 记录一条源健康事件（拉取层异常）。摘要与详情超长自动截断（与列注释语义一致）。
+ * 同一游戏同一类故障已有未恢复事件时只刷新该行（摘要、详情、cookie 标记、最近发生时间），
+ * 不新增行：否则按调度间隔重复失败会把"未恢复异常"计数撑成发生次数。
+ * 事件已恢复后再次发生则插入新行，保留故障周期边界。
  */
 export async function recordEvent(e: {
   gameId?: string;
@@ -547,17 +553,24 @@ export async function recordEvent(e: {
   detail?: string;
   isCookieSuspect?: boolean;
 }): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const gameId = e.gameId ?? null;
+  const summary = e.summary.slice(0, 200);
+  const detail = e.detail?.slice(0, 500) ?? null;
+  const cookie = e.isCookieSuspect ? 1 : 0;
+  const r = db.prepare(`
+    UPDATE events SET summary = ?, detail = ?, is_cookie = ?, occurred_at = ?
+    WHERE id = (
+      SELECT id FROM events
+      WHERE game_id IS ? AND kind = ? AND resolved_at IS NULL
+      ORDER BY occurred_at DESC, id DESC LIMIT 1
+    )
+  `).run(summary, detail, cookie, now, gameId, e.kind);
+  if (Number(r.changes) > 0) return;
   db.prepare(`
     INSERT INTO events (game_id, kind, summary, detail, is_cookie, occurred_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    e.gameId ?? null,
-    e.kind,
-    e.summary.slice(0, 200),
-    e.detail?.slice(0, 500) ?? null,
-    e.isCookieSuspect ? 1 : 0,
-    Math.floor(Date.now() / 1000),
-  );
+  `).run(gameId, e.kind, summary, detail, cookie, now);
 }
 
 /** 该游戏全部未恢复事件标记恢复（本轮拉取成功且有数据时调用）；返回恢复条数 */
@@ -613,7 +626,7 @@ export async function listEvents(limit = 200): Promise<StoredEvent[]> {
 
 /**
  * 最近一条未恢复事件（主页异常报告区取"最近异常时间"）；无未恢复事件返回 null。
- * 时间口径取 occurred_at（异常发生时间），与计数口径一致（resolved_at IS NULL）。
+ * 时间口径取 occurred_at（同一未恢复事件最近一次发生时间），与计数口径一致（resolved_at IS NULL）。
  */
 export async function latestUnresolvedEvent(): Promise<StoredEvent | null> {
   const row = db.prepare(`
@@ -623,31 +636,53 @@ export async function latestUnresolvedEvent(): Promise<StoredEvent | null> {
 }
 
 /**
- * 待结构化动态数：从未处理（extracted_at 为 NULL）或处理后内容又更新（extracted_at < updated_at）。
- * 不计尝试次数上限（含已被放弃的动态），语义为"尚未产出结构化结果的动态"，供概览卡片展示。
+ * 结构化动态积压，入队条件与 listPostsToExtract 一致（积压 = 队列实际还会处理的量）：
+ * - pending：结果过期（从未处理或处理后内容又更新）、尝试次数未达上限、引用的图片已全部到达终态；
+ * - abandoned：提取失败次数达上限、已放弃的动态，不再进入队列，单独计数供运维查看。
+ * 等 OCR 的动态不计入 pending（图片未就绪时 LLM 队列不会取它），避免与图片积压重复计数。
  */
-export async function countPendingExtract(): Promise<number> {
-  const row = db.prepare(`
-    SELECT COUNT(*) AS n FROM posts WHERE extracted_at IS NULL OR extracted_at < updated_at
-  `).get() as { n: number };
-  return Number(row.n);
+export async function countExtractBacklog(): Promise<{ pending: number; abandoned: number }> {
+  const maxAttempts = extractMaxAttempts();
+  const ocrMax = ocrMaxAttempts();
+  const pendingRow = db.prepare(`
+    SELECT COUNT(*) AS n FROM posts
+    WHERE (extracted_at IS NULL OR extracted_at < updated_at)
+      AND extract_attempts < ?
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(posts.images) img
+        LEFT JOIN ocr_records o ON o.image_url = img.value
+        WHERE o.status IS NULL
+           OR (o.status = 'failed' AND o.attempts < ?)
+      )
+  `).get(maxAttempts, ocrMax) as { n: number };
+  const abandonedRow = db.prepare(`
+    SELECT COUNT(*) AS n FROM posts
+    WHERE (extracted_at IS NULL OR extracted_at < updated_at)
+      AND extract_attempts >= ?
+  `).get(maxAttempts) as { n: number };
+  return { pending: Number(pendingRow.n), abandoned: Number(abandonedRow.n) };
 }
 
 /**
- * 尚未成功识别的图片数：按去重图片 URL 统计，不存在 status='ok' 记录的即计入
- * （含从未尝试与尝试失败待重试的），供概览卡片展示"待 OCR 图片"。
+ * OCR 图片积压：按去重图片 URL 统计，终态图片不计入。
+ * - pending：仍会进入识别队列的图片（无记录，或 failed 但尝试次数未达上限）；
+ * - dead：failed 且尝试次数达上限的永久失败图片（死图），不再重试，单独计数供运维查看。
  */
-export async function countUnrecognizedImages(): Promise<number> {
+export async function countOcrImageBacklog(): Promise<{ pending: number; dead: number }> {
   const row = db.prepare(`
-    SELECT COUNT(*) AS n FROM (
-      SELECT j.value AS image_url
+    SELECT
+      COALESCE(SUM(CASE WHEN ok = 0 AND dead = 0 THEN 1 ELSE 0 END), 0) AS pending,
+      COALESCE(SUM(dead), 0) AS dead
+    FROM (
+      SELECT
+        COALESCE(MAX(CASE WHEN o.status = 'ok' THEN 1 ELSE 0 END), 0) AS ok,
+        COALESCE(MAX(CASE WHEN o.status = 'failed' AND o.attempts >= ? THEN 1 ELSE 0 END), 0) AS dead
       FROM posts p, json_each(p.images) j
-      LEFT JOIN ocr_records o ON o.image_url = j.value AND o.status = 'ok'
+      LEFT JOIN ocr_records o ON o.image_url = j.value
       GROUP BY j.value
-      HAVING COUNT(o.image_url) = 0
     )
-  `).get() as { n: number };
-  return Number(row.n);
+  `).get(ocrMaxAttempts()) as { pending: number; dead: number };
+  return { pending: Number(row.pending), dead: Number(row.dead) };
 }
 
 // ==================== LLM 结构化（v1.5） ====================
@@ -711,8 +746,7 @@ export async function listPostsToExtract(
   order: ProcessOrder = 'desc',
 ): Promise<StoredPost[]> {
   // 图片放弃门槛取 OCR 侧的最大尝试次数，与 enrichOcr 的放弃判定保持一致
-  const ocrMaxAttempts = Number(process.env.OCR_MAX_ATTEMPTS ?? 3);
-  const ocrMax = Number.isFinite(ocrMaxAttempts) && ocrMaxAttempts >= 1 ? ocrMaxAttempts : 3;
+  const ocrMax = ocrMaxAttempts();
   const rows = db.prepare(`
     SELECT * FROM posts
     WHERE (extracted_at IS NULL OR extracted_at < updated_at)

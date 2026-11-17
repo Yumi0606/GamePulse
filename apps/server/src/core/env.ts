@@ -24,3 +24,25 @@ export function envNum(key: string, fallback: number): number {
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 }
+
+/** 读取正整数环境变量；非法或小于 1 返回 fallback */
+function envPositiveInt(key: string, fallback: number): number {
+  const n = envNum(key, fallback);
+  return n >= 1 ? Math.floor(n) : fallback;
+}
+
+/**
+ * OCR 单图最大尝试次数（OCR_MAX_ATTEMPTS，默认 3）。
+ * 内容类失败达该次数即放弃（死图），存储层队列与积压计数必须用同一口径。
+ */
+export function ocrMaxAttempts(): number {
+  return envPositiveInt('OCR_MAX_ATTEMPTS', 3);
+}
+
+/**
+ * LLM 单条动态最大尝试次数（EXTRACT_MAX_ATTEMPTS，默认 3）。
+ * 内容类失败达该次数即放弃，存储层队列与积压计数必须用同一口径。
+ */
+export function extractMaxAttempts(): number {
+  return envPositiveInt('EXTRACT_MAX_ATTEMPTS', 3);
+}

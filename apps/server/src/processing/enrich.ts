@@ -1,6 +1,6 @@
 import { listUnrecognizedImages, saveOcrFailure, saveOcrRecord, type ProcessOrder } from '../storage/store.js';
 import { OcrInfraError, recognizeImage } from './ocr.js';
-import { envNum } from '../core/env.js';
+import { envNum, ocrMaxAttempts } from '../core/env.js';
 import { moduleLogger } from '../core/logger.js';
 
 const log = moduleLogger('ocr.enrich');
@@ -22,12 +22,6 @@ function batchLimit(): number {
   return Number.isFinite(raw) && raw >= 1 ? raw : 20;
 }
 
-/** 单图最大尝试次数，超过即放弃（死图） */
-function maxAttempts(): number {
-  const raw = Number(process.env.OCR_MAX_ATTEMPTS ?? 3);
-  return Number.isFinite(raw) && raw >= 1 ? raw : 3;
-}
-
 /** 失败重试冷却（秒）：刚失败过的图片在冷却期内不再尝试（默认 300s，0=不冷却） */
 function retryCooldownSeconds(): number {
   return envNum('OCR_RETRY_COOLDOWN', 300);
@@ -45,7 +39,7 @@ export async function enrichOcr(order: ProcessOrder = 'desc'): Promise<{
   aborted: boolean;
 }> {
   const limit = batchLimit();
-  const attempts = maxAttempts();
+  const attempts = ocrMaxAttempts();
   const cooldown = retryCooldownSeconds();
   const pending = await listUnrecognizedImages(attempts, cooldown, order);
   log.info('OCR 开始 pendingImages=%d batchLimit=%d maxAttempts=%d cooldown=%ds order=%s', pending.length, limit, attempts, cooldown, order);
