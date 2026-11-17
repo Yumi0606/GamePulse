@@ -1,8 +1,12 @@
+import { useState } from 'react';
 import type { EntryDto, PostDto } from '@gamepulse/shared';
 import { ENTRY_TYPE_LABEL, fmtCst } from '@gamepulse/shared';
 import { fmtBound, fmtCountdown } from '../lib/format';
 import { OcrPanel } from './OcrPanel';
 import { Badge, StatusBadge, SubtleTag } from './ui';
+
+/** 来源动态默认展示条数 */
+const SOURCE_PREVIEW = 2;
 
 /**
  * 结构化条目卡片。
@@ -26,6 +30,10 @@ export function EntryCard({
   const sourceIds = entry.postIds?.length ? entry.postIds : entry.postId ? [entry.postId] : [];
   const sources = sourceIds.map((id) => postById.get(id)).filter((p): p is PostDto => Boolean(p));
   const showEvidence = entry.estimated === true || entry.confidence < 0.7 || (entry.phases?.length ?? 0) > 0;
+  // 合并条目可能挂十几条来源：默认只列前两条，其余折叠
+  const [allSources, setAllSources] = useState(false);
+  const visibleSourceIds = allSources ? sourceIds : sourceIds.slice(0, SOURCE_PREVIEW);
+  const restSources = sourceIds.length - visibleSourceIds.length;
 
   // 剩余时间只对未结束且结束时间已知的条目有意义
   const countdown =
@@ -162,7 +170,7 @@ export function EntryCard({
             <div className="text-muted">来源动态（{sourceIds.length}）</div>
             {sourceIds.length === 0 ? <div className="text-muted">无关联动态</div> : null}
             <ul className="mt-1 space-y-1">
-              {sourceIds.map((id) => {
+              {visibleSourceIds.map((id) => {
                 const post = postById.get(id);
                 return (
                   <li key={id} className="rounded border border-line bg-surface p-1.5">
@@ -186,6 +194,15 @@ export function EntryCard({
                 );
               })}
             </ul>
+            {sourceIds.length > SOURCE_PREVIEW ? (
+              <button
+                type="button"
+                className="mt-1 text-[12px] text-brand hover:underline"
+                onClick={() => setAllSources((value) => !value)}
+              >
+                {allSources ? '收起来源' : `还有 ${restSources} 条来源`}
+              </button>
+            ) : null}
             {sourceIds.length > 0 && sources.length === 0 ? (
               <div className="text-muted">来源动态标题未加载（在「全部活动」中可查看）</div>
             ) : null}

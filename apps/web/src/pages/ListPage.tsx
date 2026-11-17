@@ -6,7 +6,8 @@ import { api } from '../lib/api';
 import { cstDateEnd, cstDateStart } from '../lib/format';
 import { useGameName, useGames } from '../lib/hooks';
 import { EntryCard } from '../components/EntryCard';
-import { Card, Empty, Pagination, QueryState, SectionTitle, btnSecondary, fieldClass } from '../components/ui';
+import { Card, Empty, Pagination, QueryState, SectionTitle, btnSecondary } from '../components/ui';
+import { FilterField, FilterGrid, FilterPanel, controlClass } from '../components/Filters';
 
 /**
  * 全部活动（归档列表）。
@@ -133,6 +134,13 @@ export function ListPage() {
   );
 
   const hasFilter = Boolean(gameId || type || keyword || fromDate || toDate || entryId || params.get('status') || params.get('sort'));
+  // 收起的次级筛选里生效的项数，供「更多筛选」提示
+  const advancedCount =
+    (statusParam !== 'active' ? 1 : 0) +
+    (fromDate ? 1 : 0) +
+    (toDate ? 1 : 0) +
+    (sort !== 'end' ? 1 : 0) +
+    (order !== 'asc' ? 1 : 0);
 
   // 分页器在列表上下各渲染一次，长列表翻页不必先滚到底
   const pager = entriesQuery.data ? (
@@ -150,105 +158,115 @@ export function ListPage() {
 
   return (
     <div className="space-y-3">
-      <Card>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
-          <label className="flex items-center gap-1">
-            <span className="text-muted">游戏</span>
-            <select className={fieldClass} value={gameId} onChange={(e) => patch({ gameId: e.target.value || null })}>
-              <option value="">全部</option>
-              {(gamesQuery.data?.items ?? []).map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                  {g.enabled ? '' : '（停用）'}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center gap-1">
-            <span className="text-muted">分类</span>
-            <select className={fieldClass} value={type} onChange={(e) => patch({ type: e.target.value || null })}>
-              <option value="">全部</option>
-              {ENTRY_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {ENTRY_TYPE_LABEL[t]}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center gap-1">
-            <span className="text-muted">关键词</span>
-            <input
-              type="search"
-              className={`${fieldClass} w-[180px]`}
-              placeholder="活动名 / 标题 / 摘要"
-              value={keywordDraft}
-              onChange={(e) => setKeywordDraft(e.target.value)}
-            />
-          </label>
-
-          <span className="flex items-center gap-1" title="筛选活动区间与所选日期范围有重叠的条目；留空表示不限">
-            <span className="text-muted">活动时间</span>
-            <input
-              type="date"
-              className={fieldClass}
-              value={fromDate}
-              onChange={(e) => patch({ from: e.target.value || null })}
-              aria-label="活动时间起点"
-            />
-            <span className="text-muted">至</span>
-            <input
-              type="date"
-              className={fieldClass}
-              value={toDate}
-              onChange={(e) => patch({ to: e.target.value || null })}
-              aria-label="活动时间终点"
-            />
-          </span>
-
-          <label className="flex items-center gap-1">
-            <span className="text-muted">状态</span>
-            <select
-              className={fieldClass}
-              value={statusParam}
-              onChange={(e) => patch({ status: e.target.value === 'active' ? null : e.target.value })}
-            >
-              {STATUS_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center gap-1">
-            <span className="text-muted">排序</span>
-            <select
-              className={fieldClass}
-              value={sort}
-              onChange={(e) => patch({ sort: e.target.value === 'end' ? null : e.target.value })}
-            >
-              <option value="end">按结束时间</option>
-              <option value="start">按开始时间</option>
-              <option value="duration">按持续时间</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            className={btnSecondary}
-            title={order === 'asc' ? '当前升序（早→晚 / 短→长），点击切换为降序' : '当前降序（晚→早 / 长→短），点击切换为升序'}
-            onClick={() => patch({ order: order === 'asc' ? 'desc' : null })}
-          >
-            {order === 'asc' ? '↑ 升序' : '↓ 降序'}
-          </button>
-          {hasFilter ? (
-            <button type="button" className={btnSecondary} onClick={() => setParams(new URLSearchParams(), { replace: true })}>
-              重置
-            </button>
-          ) : null}
-        </div>
-      </Card>
+      <FilterPanel
+        primary={
+          <FilterGrid>
+            <FilterField label="关键词" className="col-span-2 sm:col-span-1 lg:col-span-2" hint="匹配活动名、标题与摘要">
+              <input
+                type="search"
+                className={controlClass}
+                placeholder="活动名 / 标题 / 摘要"
+                aria-label="关键词"
+                value={keywordDraft}
+                onChange={(e) => setKeywordDraft(e.target.value)}
+              />
+            </FilterField>
+            <FilterField label="游戏">
+              <select
+                className={controlClass}
+                aria-label="游戏"
+                value={gameId}
+                onChange={(e) => patch({ gameId: e.target.value || null })}
+              >
+                <option value="">全部游戏</option>
+                {(gamesQuery.data?.items ?? []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                    {g.enabled ? '' : '（停用）'}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="分类">
+              <select
+                className={controlClass}
+                aria-label="分类"
+                value={type}
+                onChange={(e) => patch({ type: e.target.value || null })}
+              >
+                <option value="">全部分类</option>
+                {ENTRY_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {ENTRY_TYPE_LABEL[t]}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+          </FilterGrid>
+        }
+        advanced={
+          <FilterGrid>
+            <FilterField label="状态" className="col-span-2 sm:col-span-1">
+              <select
+                className={controlClass}
+                aria-label="状态"
+                value={statusParam}
+                onChange={(e) => patch({ status: e.target.value === 'active' ? null : e.target.value })}
+              >
+                {STATUS_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="活动时间" className="col-span-2" hint="筛选活动区间与所选日期范围有重叠的条目；留空表示不限">
+              <span className="flex items-center gap-1">
+                <input
+                  type="date"
+                  className={controlClass}
+                  value={fromDate}
+                  onChange={(e) => patch({ from: e.target.value || null })}
+                  aria-label="活动时间起点"
+                />
+                <span className="shrink-0 text-[12px] text-muted">至</span>
+                <input
+                  type="date"
+                  className={controlClass}
+                  value={toDate}
+                  onChange={(e) => patch({ to: e.target.value || null })}
+                  aria-label="活动时间终点"
+                />
+              </span>
+            </FilterField>
+            <FilterField label="排序" className="col-span-2 sm:col-span-1">
+              <span className="flex items-center gap-1">
+                <select
+                  className={`${controlClass} flex-1`}
+                  aria-label="排序字段"
+                  value={sort}
+                  onChange={(e) => patch({ sort: e.target.value === 'end' ? null : e.target.value })}
+                >
+                  <option value="end">按结束时间</option>
+                  <option value="start">按开始时间</option>
+                  <option value="duration">按持续时间</option>
+                </select>
+                <button
+                  type="button"
+                  className={`${btnSecondary} shrink-0`}
+                  title={order === 'asc' ? '当前升序（早→晚 / 短→长），点击切换为降序' : '当前降序（晚→早 / 长→短），点击切换为升序'}
+                  onClick={() => patch({ order: order === 'asc' ? 'desc' : null })}
+                >
+                  {order === 'asc' ? '↑ 升序' : '↓ 降序'}
+                </button>
+              </span>
+            </FilterField>
+          </FilterGrid>
+        }
+        advancedCount={advancedCount}
+        resetEnabled={hasFilter}
+        onReset={() => setParams(new URLSearchParams(), { replace: true })}
+      />
 
       {entryId ? (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-brand/25 bg-brand-weak px-3 py-2 text-[13px]">

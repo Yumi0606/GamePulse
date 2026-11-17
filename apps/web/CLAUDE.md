@@ -9,7 +9,7 @@ src/
   main.tsx       入口：QueryClientProvider + BrowserRouter(basename="/app")
   App.tsx        路由表
   index.css      Tailwind v4 入口与 @theme 语义色令牌
-  components/    Layout / EntryCard / PostCard / OcrPanel / ui（按钮档位、徽标、分页、占位）
+  components/    Layout / EntryCard / PostCard / OcrPanel / Filters / ui（按钮档位、徽标、分页、占位）
   pages/         HomePage / ListPage / PostsPage / CalendarPage / WeekPage / HealthPage（week.css 只服务甘特图）
   lib/           api（/api/v1 客户端）format（北京时间展示与倒计时）game-theme（配色）hooks（游戏清单）
 ```
@@ -34,6 +34,7 @@ src/
 - 游戏清单只从 `/api/v1/games` 取；条目状态直接用响应里的 `status`，前端不复算。
 - 时间展示走共享包 `fmtCst` / 本地 `fmtDate`，固定 `Asia/Shanghai`；禁止 `toISOString()`。
 - 筛选、分页、月份等状态以 URL query 为唯一真源；localStorage 不存业务状态。
+- 筛选区统一用 `components/Filters` 的 `FilterPanel` + `FilterGrid` + `FilterField`：主筛选常驻，次级筛选在窄屏收进「更多筛选」；字段标签在上、控件占满列宽，不回到 flex-wrap 平铺。
 - 时间粒度：`startTimeKnown/endTimeKnown === false` 时只显示日期。
 - 日历按月、周视图按可见时间窗口向 `/api/v1/entries` 传 `from` / `to` 取数，不再拉全量；无开始时间的条目用 `status=unknown` 单独查一次。
 - 深链定位条目用 `/app/all?entry=<id>`，列表页据此按 `id` 过滤并忽略状态筛选；旧链接 `/app?entry=` 自动重定向。

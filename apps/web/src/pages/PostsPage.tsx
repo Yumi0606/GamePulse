@@ -4,7 +4,8 @@ import { api } from '../lib/api';
 import { cstDateEnd, cstDateStart } from '../lib/format';
 import { useDebouncedQueryParam, useGameName, useGames } from '../lib/hooks';
 import { PostCard } from '../components/PostCard';
-import { Card, Empty, Pagination, QueryState, btnSecondary, fieldClass } from '../components/ui';
+import { Card, Empty, Pagination, QueryState } from '../components/ui';
+import { FilterField, FilterGrid, FilterPanel, controlClass } from '../components/Filters';
 
 /**
  * 原始动态（数据核验视图）。
@@ -110,6 +111,15 @@ export function PostsPage() {
       params.get('sort') ||
       params.get('order'),
   );
+  // 收起的次级筛选里生效的项数，供「更多筛选」提示
+  const advancedCount =
+    (fromDate ? 1 : 0) +
+    (toDate ? 1 : 0) +
+    (imagesMin !== undefined ? 1 : 0) +
+    (imagesMax !== undefined ? 1 : 0) +
+    (extracted ? 1 : 0) +
+    (sort !== 'published' ? 1 : 0) +
+    (order !== 'desc' ? 1 : 0);
 
   // 分页器在列表上下各渲染一次，长列表翻页不必先滚到底
   const pager = postsQuery.data ? (
@@ -135,128 +145,131 @@ export function PostsPage() {
             <span className="ml-auto text-[12px] text-muted tabular-nums">共 {postsQuery.data.total} 条</span>
           ) : null}
         </div>
-
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
-          <label className="flex items-center gap-1">
-            <span className="text-muted">游戏</span>
-            <select className={fieldClass} value={gameId} onChange={(e) => patch({ gameId: e.target.value || null })}>
-              <option value="">全部</option>
-              {(gamesQuery.data?.items ?? []).map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                  {g.enabled ? '' : '（停用）'}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center gap-1">
-            <span className="text-muted">关键词</span>
-            <input
-              type="search"
-              className={`${fieldClass} w-[200px]`}
-              placeholder="标题 / 正文"
-              value={keywordDraft}
-              onChange={(e) => setKeywordDraft(e.target.value)}
-            />
-          </label>
-
-          <span className="flex items-center gap-1" title="按动态发布时间筛选；留空表示不限">
-            <span className="text-muted">发布时间</span>
-            <input
-              type="date"
-              className={fieldClass}
-              value={fromDate}
-              onChange={(e) => patch({ from: e.target.value || null })}
-              aria-label="发布时间起点"
-            />
-            <span className="text-muted">至</span>
-            <input
-              type="date"
-              className={fieldClass}
-              value={toDate}
-              onChange={(e) => patch({ to: e.target.value || null })}
-              aria-label="发布时间终点"
-            />
-          </span>
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
-          <label
-            className="flex items-center gap-1"
-            title="按动态携带的图片数量筛选，多图动态是 OCR 核验的重点；留空表示该端不限"
-          >
-            <span className="text-muted">图片数</span>
-            <input
-              type="number"
-              min={0}
-              className={`${fieldClass} w-16`}
-              placeholder="不限"
-              value={imagesMinDraft}
-              onChange={(e) => setImagesMinDraft(e.target.value)}
-              aria-label="图片数量下限"
-            />
-            <span className="text-muted">至</span>
-            <input
-              type="number"
-              min={0}
-              className={`${fieldClass} w-16`}
-              placeholder="不限"
-              value={imagesMaxDraft}
-              onChange={(e) => setImagesMaxDraft(e.target.value)}
-              aria-label="图片数量上限"
-            />
-          </label>
-
-          <label className="flex items-center gap-1" title="提取状态来自最近一次成功提取的条目数">
-            <span className="text-muted">提取状态</span>
-            <select
-              className={fieldClass}
-              value={extracted}
-              onChange={(e) => patch({ extracted: e.target.value || null })}
-            >
-              {EXTRACTED_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center gap-1">
-            <span className="text-muted">排序</span>
-            <select
-              className={fieldClass}
-              value={sort}
-              onChange={(e) => patch({ sort: e.target.value === 'published' ? null : e.target.value })}
-            >
-              {SORT_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className={btnSecondary}
-            title={order === 'desc' ? '当前降序，点击切换为升序' : '当前升序，点击切换为降序'}
-            onClick={() => patch({ order: order === 'desc' ? null : 'asc' })}
-          >
-            {order === 'desc' ? '↓ 降序' : '↑ 升序'}
-          </button>
-
-          {hasFilter ? (
-            <button
-              type="button"
-              className={btnSecondary}
-              onClick={() => setParams(new URLSearchParams(), { replace: true })}
-            >
-              重置
-            </button>
-          ) : null}
-        </div>
       </Card>
+
+      <FilterPanel
+        primary={
+          <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
+            <FilterField label="关键词" hint="匹配动态标题与正文">
+              <input
+                type="search"
+                className={controlClass}
+                placeholder="标题 / 正文"
+                aria-label="关键词"
+                value={keywordDraft}
+                onChange={(e) => setKeywordDraft(e.target.value)}
+              />
+            </FilterField>
+            <FilterField label="游戏">
+              <select
+                className={controlClass}
+                aria-label="游戏"
+                value={gameId}
+                onChange={(e) => patch({ gameId: e.target.value || null })}
+              >
+                <option value="">全部游戏</option>
+                {(gamesQuery.data?.items ?? []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                    {g.enabled ? '' : '（停用）'}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+          </div>
+        }
+        advanced={
+          <FilterGrid>
+            <FilterField label="发布时间" className="col-span-2" hint="按动态发布时间筛选；留空表示不限">
+              <span className="flex items-center gap-1">
+                <input
+                  type="date"
+                  className={controlClass}
+                  value={fromDate}
+                  onChange={(e) => patch({ from: e.target.value || null })}
+                  aria-label="发布时间起点"
+                />
+                <span className="shrink-0 text-[12px] text-muted">至</span>
+                <input
+                  type="date"
+                  className={controlClass}
+                  value={toDate}
+                  onChange={(e) => patch({ to: e.target.value || null })}
+                  aria-label="发布时间终点"
+                />
+              </span>
+            </FilterField>
+            <FilterField
+              label="图片数"
+              className="col-span-2"
+              hint="按动态携带的图片数量筛选，多图动态是 OCR 核验的重点；留空表示该端不限"
+            >
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  className={controlClass}
+                  placeholder="不限"
+                  value={imagesMinDraft}
+                  onChange={(e) => setImagesMinDraft(e.target.value)}
+                  aria-label="图片数量下限"
+                />
+                <span className="shrink-0 text-[12px] text-muted">至</span>
+                <input
+                  type="number"
+                  min={0}
+                  className={controlClass}
+                  placeholder="不限"
+                  value={imagesMaxDraft}
+                  onChange={(e) => setImagesMaxDraft(e.target.value)}
+                  aria-label="图片数量上限"
+                />
+              </span>
+            </FilterField>
+            <FilterField label="提取状态" className="col-span-2 sm:col-span-1" hint="提取状态来自最近一次成功提取的条目数">
+              <select
+                className={controlClass}
+                aria-label="提取状态"
+                value={extracted}
+                onChange={(e) => patch({ extracted: e.target.value || null })}
+              >
+                {EXTRACTED_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="排序" className="col-span-2 sm:col-span-1">
+              <span className="flex items-center gap-1">
+                <select
+                  className={`${controlClass} flex-1`}
+                  aria-label="排序字段"
+                  value={sort}
+                  onChange={(e) => patch({ sort: e.target.value === 'published' ? null : e.target.value })}
+                >
+                  {SORT_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="shrink-0 rounded border border-line bg-surface px-2 py-1 text-[12px] text-ink hover:bg-bg"
+                  title={order === 'desc' ? '当前降序，点击切换为升序' : '当前升序，点击切换为降序'}
+                  onClick={() => patch({ order: order === 'desc' ? null : 'asc' })}
+                >
+                  {order === 'desc' ? '↓' : '↑'}
+                </button>
+              </span>
+            </FilterField>
+          </FilterGrid>
+        }
+        advancedCount={advancedCount}
+        resetEnabled={hasFilter}
+        onReset={() => setParams(new URLSearchParams(), { replace: true })}
+      />
 
       {pager}
 

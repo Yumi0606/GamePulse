@@ -27,24 +27,32 @@ export function OcrPanel({ postId, imageCount }: { postId: string; imageCount?: 
       {query.data ? (
         <div className="mt-1 space-y-1.5">
           {query.data.images.length === 0 ? <div className="text-muted">该动态没有图片</div> : null}
-          {query.data.images.map((img) => (
-            <div key={img.imageUrl} className="rounded border border-line bg-bg p-2">
-              <div className="mb-1 flex items-center gap-2">
+          {query.data.images.map((img, index) => (
+            // 图片级折叠：多图动态默认只展开第一张，避免整块 OCR 文本一次铺开
+            <details
+              key={img.imageUrl}
+              open={index === 0}
+              className="rounded border border-line bg-bg"
+            >
+              <summary className="flex flex-wrap items-center gap-2 px-2 py-1">
                 <Badge tone={img.status === 'ok' ? 'ok' : img.status === 'failed' ? 'danger' : 'neutral'}>
                   {img.status}
                 </Badge>
                 <span className="truncate text-[11px] text-muted">{img.imageUrl}</span>
                 {img.attempts > 0 ? <span className="text-[11px] text-muted">尝试 {img.attempts} 次</span> : null}
+                <span className="ml-auto shrink-0 text-[11px] text-muted">第 {index + 1} 张</span>
+              </summary>
+              <div className="px-2 pb-2">
+                {img.lastError ? <div className="text-[11px] text-danger">{img.lastError}</div> : null}
+                {img.text ? (
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-5">
+                    {img.text}
+                  </pre>
+                ) : (
+                  <div className="text-[11px] text-muted">无文本</div>
+                )}
               </div>
-              {img.lastError ? <div className="text-[11px] text-danger">{img.lastError}</div> : null}
-              {img.text ? (
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-5">
-                  {img.text}
-                </pre>
-              ) : (
-                <div className="text-[11px] text-muted">无文本</div>
-              )}
-            </div>
+            </details>
           ))}
         </div>
       ) : null}

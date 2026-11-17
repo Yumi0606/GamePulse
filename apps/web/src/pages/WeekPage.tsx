@@ -7,8 +7,9 @@ import { ENTRY_TYPES, ENTRY_TYPE_LABEL } from '@gamepulse/shared';
 import { api } from '../lib/api';
 import { cstDateStart, fmtBound, fmtCstDate } from '../lib/format';
 import { gameTheme, typeColor } from '../lib/game-theme';
-import { useGameName, useGames } from '../lib/hooks';
+import { useDebouncedQueryParam, useGameName, useGames } from '../lib/hooks';
 import { Card, QueryState, btnSecondary, fieldClass } from '../components/ui';
+import { FilterField, FilterGrid, FilterPanel, controlClass } from '../components/Filters';
 import './week.css';
 
 /**
@@ -198,9 +199,13 @@ export function WeekPage() {
   const gameId = params.get('gameId') ?? '';
   const type = params.get('type') ?? '';
   const keyword = params.get('q') ?? '';
+  // 关键词输入防抖后写回 URL，避免逐字触发时间轴取数
+  const [keywordDraft, setKeywordDraft] = useDebouncedQueryParam('q');
   const sort = params.get('sort') ?? 'start';
   const order = params.get('order') === 'desc' ? 'desc' : 'asc';
   const onlyActive = params.get('active') === '1';
+  const hasFilter = Boolean(gameId || type || keyword || sort !== 'start' || order === 'desc' || onlyActive);
+  const advancedCount = (sort !== 'start' ? 1 : 0) + (order === 'desc' ? 1 : 0) + (onlyActive ? 1 : 0);
 
   const patch = (values: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -607,160 +612,183 @@ export function WeekPage() {
 
   return (
     <div className="space-y-3">
-      <Card>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
-          <label className="flex items-center gap-1">
-            <span className="text-muted">游戏</span>
-            <select className={fieldClass} value={gameId} onChange={(e) => patch({ gameId: e.target.value || null })}>
-              <option value="">全部</option>
-              {(gamesQuery.data?.items ?? []).map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-1">
-            <span className="text-muted">分类</span>
-            <select className={fieldClass} value={type} onChange={(e) => patch({ type: e.target.value || null })}>
-              <option value="">全部</option>
-              {ENTRY_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {ENTRY_TYPE_LABEL[t]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-1">
-            <span className="text-muted">关键词</span>
-            <input
-              type="search"
-              className={`w-[170px] ${fieldClass}`}
-              placeholder="活动名 / 分类 / 摘要"
-              value={keyword}
-              onChange={(e) => patch({ q: e.target.value || null })}
-            />
-          </label>
-          <label className="flex items-center gap-1">
-            <span className="text-muted">排序</span>
-            <select
-              className={fieldClass}
-              value={sort}
-              onChange={(e) => patch({ sort: e.target.value === 'start' ? null : e.target.value })}
-            >
-              <option value="start">开始时间</option>
-              <option value="end">结束时间</option>
-              <option value="duration">持续时间</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            className={btnSecondary}
-            title={order === 'asc' ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序'}
-            onClick={() => patch({ order: order === 'desc' ? null : 'desc' })}
-          >
-            {order === 'asc' ? '↑' : '↓'}
-          </button>
-          <label className="flex items-center gap-1" title="勾选后隐藏已结束的活动行">
-            <input type="checkbox" checked={onlyActive} onChange={(e) => patch({ active: e.target.checked ? '1' : null })} />
-            仅进行中
-          </label>
-          <button
-            type="button"
-            className={btnSecondary}
-            onClick={() => patch({ gameId: null, type: null, q: null, sort: null, order: null, active: null })}
-          >
-            重置
-          </button>
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
-          <div className="flex items-center gap-1">
-            <span className="text-muted">精度</span>
-            <div className="flex overflow-hidden rounded border border-line">
-              {PRECISIONS.map((p) => (
-                <button
-                  key={p.key}
-                  type="button"
-                  aria-pressed={precision === p.key}
-                  className={`px-2 py-1 text-[12px] ${precision === p.key ? 'bg-brand text-white' : 'bg-surface text-ink hover:bg-bg'}`}
-                  onClick={() => changePrecision(p.key)}
+      <FilterPanel
+        primary={
+          <FilterGrid>
+            <FilterField label="关键词" className="col-span-2 sm:col-span-1 lg:col-span-2" hint="匹配活动名、分类与摘要">
+              <input
+                type="search"
+                className={controlClass}
+                placeholder="活动名 / 分类 / 摘要"
+                aria-label="关键词"
+                value={keywordDraft}
+                onChange={(e) => setKeywordDraft(e.target.value)}
+              />
+            </FilterField>
+            <FilterField label="游戏">
+              <select
+                className={controlClass}
+                aria-label="游戏"
+                value={gameId}
+                onChange={(e) => patch({ gameId: e.target.value || null })}
+              >
+                <option value="">全部游戏</option>
+                {(gamesQuery.data?.items ?? []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="分类">
+              <select
+                className={controlClass}
+                aria-label="分类"
+                value={type}
+                onChange={(e) => patch({ type: e.target.value || null })}
+              >
+                <option value="">全部分类</option>
+                {ENTRY_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {ENTRY_TYPE_LABEL[t]}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+          </FilterGrid>
+        }
+        advanced={
+          <FilterGrid>
+            <FilterField label="排序" className="col-span-2 sm:col-span-1">
+              <span className="flex items-center gap-1">
+                <select
+                  className={`${controlClass} flex-1`}
+                  aria-label="排序字段"
+                  value={sort}
+                  onChange={(e) => patch({ sort: e.target.value === 'start' ? null : e.target.value })}
                 >
-                  {p.label}
+                  <option value="start">开始时间</option>
+                  <option value="end">结束时间</option>
+                  <option value="duration">持续时间</option>
+                </select>
+                <button
+                  type="button"
+                  className={`${btnSecondary} shrink-0`}
+                  title={order === 'asc' ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序'}
+                  onClick={() => patch({ order: order === 'desc' ? null : 'desc' })}
+                >
+                  {order === 'asc' ? '↑' : '↓'}
                 </button>
-              ))}
+              </span>
+            </FilterField>
+            <div className="col-span-2 flex min-w-0 flex-col gap-1 sm:col-span-1" title="勾选后隐藏已结束的活动行">
+              <span className="text-[12px] leading-none text-muted">状态</span>
+              <label className="flex h-[30px] items-center gap-2 rounded border border-line bg-surface px-2 text-[13px]">
+                <input
+                  type="checkbox"
+                  checked={onlyActive}
+                  onChange={(e) => patch({ active: e.target.checked ? '1' : null })}
+                />
+                仅进行中
+              </label>
+            </div>
+          </FilterGrid>
+        }
+        toolbar={
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-end gap-x-3 gap-y-2 text-[13px]">
+              <div className="flex flex-col gap-1">
+                <span className="text-[12px] leading-none text-muted">精度</span>
+                <div className="flex overflow-hidden rounded border border-line">
+                  {PRECISIONS.map((p) => (
+                    <button
+                      key={p.key}
+                      type="button"
+                      aria-pressed={precision === p.key}
+                      className={`px-2 py-1 text-[12px] ${precision === p.key ? 'bg-brand text-white' : 'bg-surface text-ink hover:bg-bg'}`}
+                      onClick={() => changePrecision(p.key)}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[12px] leading-none text-muted">行高</span>
+                <div className="flex overflow-hidden rounded border border-line">
+                  {ROW_HEIGHTS.map((h) => (
+                    <button
+                      key={h.value}
+                      type="button"
+                      aria-pressed={rowHeight === h.value}
+                      className={`px-2 py-1 text-[12px] ${rowHeight === h.value ? 'bg-brand text-white' : 'bg-surface text-ink hover:bg-bg'}`}
+                      onClick={() => setRowHeight(h.value)}
+                    >
+                      {h.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[12px] leading-none text-muted">定位</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    className={fieldClass}
+                    value={jumpDate}
+                    aria-label="定位到日期"
+                    onChange={(e) => {
+                      setJumpDate(e.target.value);
+                      const ts = cstDateStart(e.target.value);
+                      if (ts !== undefined) jumpTo(ts);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={btnSecondary}
+                    onClick={() => {
+                      setJumpDate(fmtCstDate(now));
+                      jumpTo(now);
+                    }}
+                  >
+                    回到今天
+                  </button>
+                </span>
+              </div>
+              <span className="text-[12px] text-muted sm:ml-auto">
+                滚轮纵移 · Shift+滚轮横移 · 拖动平移 · ←/→ 平移 · 到两端自动加载
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden className="h-2.5 w-9 rounded-sm bg-brand" />
+                进行中
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden className="h-2.5 w-9 rounded-sm border border-dashed border-brand bg-brand opacity-[0.45]" />
+                未开始
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden className="h-2.5 w-9 rounded-sm bg-muted opacity-75" />
+                <span className="line-through">已结束</span>
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden className="h-2.5 w-0.5 bg-brand" />
+                今天
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden className="inline-flex h-2.5 w-9 items-center justify-end rounded-sm bg-neutral-weak pr-0.5">
+                  <span className="h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] border-l-muted" />
+                </span>
+                箭头 = 延续到窗口外
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted">行高</span>
-            <div className="flex overflow-hidden rounded border border-line">
-              {ROW_HEIGHTS.map((h) => (
-                <button
-                  key={h.value}
-                  type="button"
-                  aria-pressed={rowHeight === h.value}
-                  className={`px-2 py-1 text-[12px] ${rowHeight === h.value ? 'bg-brand text-white' : 'bg-surface text-ink hover:bg-bg'}`}
-                  onClick={() => setRowHeight(h.value)}
-                >
-                  {h.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted">定位</span>
-            <input
-              type="date"
-              className={fieldClass}
-              value={jumpDate}
-              aria-label="定位到日期"
-              onChange={(e) => {
-                setJumpDate(e.target.value);
-                const ts = cstDateStart(e.target.value);
-                if (ts !== undefined) jumpTo(ts);
-              }}
-            />
-            <button
-              type="button"
-              className={btnSecondary}
-              onClick={() => {
-                setJumpDate(fmtCstDate(now));
-                jumpTo(now);
-              }}
-            >
-              回到今天
-            </button>
-          </div>
-          <span className="ml-auto text-[12px] text-muted">
-            滚轮纵移 · Shift+滚轮横移 · 拖动平移 · ←/→ 平移 · 到两端自动加载
-          </span>
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
-          <span className="inline-flex items-center gap-1">
-            <span aria-hidden className="h-2.5 w-9 rounded-sm bg-brand" />
-            进行中
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span aria-hidden className="h-2.5 w-9 rounded-sm border border-dashed border-brand bg-brand opacity-[0.45]" />
-            未开始
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span aria-hidden className="h-2.5 w-9 rounded-sm bg-muted opacity-75" />
-            <span className="line-through">已结束</span>
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span aria-hidden className="h-2.5 w-0.5 bg-brand" />
-            今天
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span aria-hidden className="inline-flex h-2.5 w-9 items-center justify-end rounded-sm bg-neutral-weak pr-0.5">
-              <span className="h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] border-l-muted" />
-            </span>
-            箭头 = 延续到窗口外
-          </span>
-        </div>
-      </Card>
+        }
+        advancedCount={advancedCount}
+        resetEnabled={hasFilter}
+        onReset={() => patch({ gameId: null, type: null, q: null, sort: null, order: null, active: null })}
+      />
 
       <QueryState loading={false} error={entriesQuery.error} onRetry={() => entriesQuery.refetch()} />
 

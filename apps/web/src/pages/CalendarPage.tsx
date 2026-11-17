@@ -7,7 +7,8 @@ import { api } from '../lib/api';
 import { cstDateStart, currentCstMonth, fmtBound, fmtCstDate } from '../lib/format';
 import { gameTheme } from '../lib/game-theme';
 import { useGameName, useGames } from '../lib/hooks';
-import { Card, Empty, QueryState, btnSecondary, fieldClass } from '../components/ui';
+import { Card, Empty, Pagination, QueryState, btnSecondary, fieldClass } from '../components/ui';
+import { FilterField, FilterGrid, FilterPanel, controlClass } from '../components/Filters';
 
 /**
  * 日历视图（按月，北京时间）。
@@ -23,6 +24,10 @@ import { Card, Empty, QueryState, btnSecondary, fieldClass } from '../components
  */
 const DAY = 86400;
 const MAX_PER_CELL = 3;
+/** 每周默认展示的跨天泳道数，超出折叠 */
+const MAX_LANES = 3;
+/** 「时间待确认」列表每页条数 */
+const UNANCHORED_PAGE = 10;
 
 type PointClass = 'start' | 'end' | 'reward' | 'single';
 
@@ -98,6 +103,9 @@ export function CalendarPage() {
   const gameName = useGameName();
   const gamesQuery = useGames();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set());
+  const [unanchoredOpen, setUnanchoredOpen] = useState(false);
+  const [unanchoredPage, setUnanchoredPage] = useState(1);
 
   const gameId = params.get('gameId') ?? '';
   const type = params.get('type') ?? '';
@@ -139,6 +147,12 @@ export function CalendarPage() {
   const unanchored = (unanchoredQuery.data?.items ?? []).filter(
     (e) => e.startAt === undefined && e.endAt === undefined,
   );
+  const unanchoredPageCount = Math.max(1, Math.ceil(unanchored.length / UNANCHORED_PAGE));
+  const unanchoredCurrent = Math.min(unanchoredPage, unanchoredPageCount);
+  const unanchoredVisible = unanchored.slice(
+    (unanchoredCurrent - 1) * UNANCHORED_PAGE,
+    unanchoredCurrent * UNANCHORED_PAGE,
+  );
 
   const [year, monthNum] = month.split('-').map(Number);
   const prevMonth = monthNum === 1 ? `${year - 1}-12` : `${year}-${String(monthNum - 1).padStart(2, '0')}`;
@@ -149,6 +163,15 @@ export function CalendarPage() {
       const next = new Set(prev);
       if (next.has(dateStr)) next.delete(dateStr);
       else next.add(dateStr);
+      return next;
+    });
+  };
+
+  const toggleWeek = (weekIndex: number) => {
+    setExpandedWeeks((prev) => {
+      const next = new Set(prev);
+      if (next.has(weekIndex)) next.delete(weekIndex);
+      else next.add(weekIndex);
       return next;
     });
   };
@@ -210,42 +233,57 @@ export function CalendarPage() {
           </span>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-[13px]">
-          <label className="flex items-center gap-1">
-            <span className="text-muted">游戏</span>
-            <select className={fieldClass} value={gameId} onChange={(e) => patch({ gameId: e.target.value || null })}>
-              <option value="">全部</option>
-              {(gamesQuery.data?.items ?? []).map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-1">
-            <span className="text-muted">分类</span>
-            <select className={fieldClass} value={type} onChange={(e) => patch({ type: e.target.value || null })}>
-              <option value="">全部</option>
-              {ENTRY_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {ENTRY_TYPE_LABEL[t]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className={btnSecondary}
-            onClick={() => {
-              setExpanded(new Set());
-              patch({ gameId: null, type: null });
-            }}
-          >
-            重置筛选
-          </button>
-          <span className="text-[12px] text-muted">当日超过 3 条时用 +N 展开</span>
-        </div>
       </Card>
+
+      <FilterPanel
+        primary={
+          <FilterGrid>
+            <FilterField label="游戏" className="lg:col-span-2">
+              <select
+                className={controlClass}
+                aria-label="游戏"
+                value={gameId}
+                onChange={(e) => patch({ gameId: e.target.value || null })}
+              >
+                <option value="">全部游戏</option>
+                {(gamesQuery.data?.items ?? []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="分类" className="lg:col-span-2">
+              <select
+                className={controlClass}
+                aria-label="分类"
+                value={type}
+                onChange={(e) => patch({ type: e.target.value || null })}
+              >
+                <option value="">全部分类</option>
+                {ENTRY_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {ENTRY_TYPE_LABEL[t]}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+          </FilterGrid>
+        }
+        note="当日超过 3 条时用 +N 展开"
+        actions={
+          expanded.size > 0 ? (
+            <button type="button" className={btnSecondary} onClick={() => setExpanded(new Set())}>
+              收起全部展开日
+            </button>
+          ) : null
+        }
+        resetEnabled={Boolean(gameId || type || expanded.size > 0)}
+        onReset={() => {
+          setExpanded(new Set());
+          patch({ gameId: null, type: null });
+        }}
+      />
 
       <QueryState loading={false} error={entriesQuery.error} onRetry={() => entriesQuery.refetch()} />
 
@@ -259,9 +297,12 @@ export function CalendarPage() {
           ))}
         </div>
 
-        {model.weeks.map((week) => (
+        {model.weeks.map((week) => {
+          const weekOpen = expandedWeeks.has(week.index);
+          const lanes = weekOpen ? week.lanes : week.lanes.slice(0, MAX_LANES);
+          return (
           <div key={week.index} className="border-b border-line last:border-b-0">
-            {week.lanes.map((lane, laneIndex) => (
+            {lanes.map((lane, laneIndex) => (
               <div key={`lane-${laneIndex}`} className="grid grid-cols-7 gap-x-1 px-1 pt-1">
                 {lane.map((seg) => {
                   const theme = gameTheme(seg.gameId);
@@ -297,6 +338,19 @@ export function CalendarPage() {
                 })}
               </div>
             ))}
+
+            {week.lanes.length > MAX_LANES ? (
+              <div className="px-1 pt-1">
+                <button
+                  type="button"
+                  className="text-[11px] text-muted hover:text-ink hover:underline"
+                  aria-expanded={weekOpen}
+                  onClick={() => toggleWeek(week.index)}
+                >
+                  {weekOpen ? '收起跨天活动' : `还有 ${week.lanes.length - MAX_LANES} 行跨天活动`}
+                </button>
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-7 gap-x-1 p-1">
               {week.days.map((day, col) => {
@@ -338,27 +392,62 @@ export function CalendarPage() {
               })}
             </div>
           </div>
-        ))}
+          );
+        })}
       </Card>
 
       {!entriesQuery.isLoading && entries.length === 0 ? <Empty>当月无任何条目</Empty> : null}
 
       {unanchored.length > 0 ? (
         <Card>
-          <h2 className="mb-1 border-l-4 border-brand pl-2 text-[15px] font-semibold">
-            时间待确认 <span className="text-[12px] font-normal text-muted">（{unanchored.length}，只有引用型时间）</span>
-          </h2>
-          <ul className="divide-y divide-line text-[13px]">
-            {unanchored.map((e) => (
-              <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
-                <span className="text-muted">{gameName(e.gameId)}</span>
-                <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
-                <span className="text-[12px] text-muted">
-                  {[e.startRef?.refText, e.endRef?.refText].filter(Boolean).map((t) => `［${t as string}］`).join(' ')}
-                </span>
-              </li>
-            ))}
-          </ul>
+          <button
+            type="button"
+            className="flex w-full flex-wrap items-baseline gap-2 text-left"
+            aria-expanded={unanchoredOpen}
+            onClick={() => setUnanchoredOpen((value) => !value)}
+          >
+            <span className="border-l-4 border-brand pl-2 text-[15px] font-semibold">时间待确认</span>
+            <span className="text-[12px] font-normal text-muted">（{unanchored.length}，只有引用型时间）</span>
+            <span className="ml-auto text-[12px] text-brand">{unanchoredOpen ? '收起' : '展开'}</span>
+          </button>
+          {unanchoredOpen ? (
+            <>
+              {unanchoredPageCount > 1 ? (
+                <div className="mt-1.5 border-y border-line px-1 py-1">
+                  <Pagination
+                    page={unanchoredCurrent}
+                    pageSize={UNANCHORED_PAGE}
+                    total={unanchored.length}
+                    onChange={setUnanchoredPage}
+                  />
+                </div>
+              ) : null}
+              <ul className="mt-1 divide-y divide-line text-[13px]">
+                {unanchoredVisible.map((e) => (
+                  <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
+                    <span className="text-muted">{gameName(e.gameId)}</span>
+                    <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
+                    <span className="text-[12px] text-muted">
+                      {[e.startRef?.refText, e.endRef?.refText]
+                        .filter(Boolean)
+                        .map((t) => `［${t as string}］`)
+                        .join(' ')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {unanchoredPageCount > 1 ? (
+                <div className="mt-1 border-t border-line px-1 py-1">
+                  <Pagination
+                    page={unanchoredCurrent}
+                    pageSize={UNANCHORED_PAGE}
+                    total={unanchored.length}
+                    onChange={setUnanchoredPage}
+                  />
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </Card>
       ) : null}
     </div>
