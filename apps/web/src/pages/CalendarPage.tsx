@@ -4,25 +4,27 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import type { EntryDto } from '@gamepulse/shared';
 import { ENTRY_TYPES, ENTRY_TYPE_LABEL, fmtCst } from '@gamepulse/shared';
 import { api } from '../lib/api';
-import { currentCstMonth, fmtBound, fmtCstDate } from '../lib/format';
+import { cstDateStart, currentCstMonth, fmtBound, fmtCstDate } from '../lib/format';
 import { gameTheme } from '../lib/game-theme';
 import { useGameName, useGames } from '../lib/hooks';
-import { Card, Empty, QueryState } from '../components/ui';
+import { Card, Empty, QueryState, btnSecondary, fieldClass } from '../components/ui';
 
 /**
  * 日历视图（按月，北京时间）。
  *
- * 表达方式与旧版一致：
- * - 起止跨越 3 格以上的活动画成横跨持续条（按周单独成行）；
- * - 其余落点（开始 / 结束 / 奖励截止）进当天单元格，超过 3 条折叠为 +N；
+ * 编码约定：
+ * - 跨天活动只画一条持续条，条两端的圆点 / 三角表示开始与结束，不再进入当日列表；
+ * - 当日列表只放单日活动与奖励截止，超过 3 条折叠为 +N；
+ * - 持续条按周做泳道打包，同一周内互不重叠的活动复用一行；
  * - 跨月截断处用 ‹ › 标记，不误读为完整周期。
  *
- * 条目量级小（全库数百条），一次拉全量在前端按月切分；筛选走服务端。
+ * 取数按可见月份向服务端请求区间重叠的条目，不再拉全量；
+ * 无开始时间的条目单独查一次，与月份无关。
  */
 const DAY = 86400;
 const MAX_PER_CELL = 3;
 
-type PointClass = 'start' | 'end' | 'reward';
+type PointClass = 'start' | 'end' | 'reward' | 'single';
 
 interface DayPoint {
   cls: PointClass;
@@ -42,21 +44,65 @@ interface Span {
   entryId: string;
 }
 
+interface Segment {
+  colStart: number;
+  colspan: number;
+  lead: string;
+  trail: string;
+  title: string;
+  tip: string;
+  gameId: string;
+  entryId: string;
+  /** 本周内可见的起止端，用于画条端标记 */
+  startMark: boolean;
+  endMark: boolean;
+}
+
 const POINT_STYLE: Record<PointClass, string> = {
   start: 'bg-ok-weak text-ok',
   end: 'bg-danger-weak text-danger',
   reward: 'bg-warn-weak text-warn',
+  single: 'bg-neutral-weak text-ink-soft',
 };
+
+/**
+ * 点位图标：颜色之外的第二重编码。
+ * 用显式尺寸的图形而非字符，避免不同字体下 ▶ 与 ■ 视觉大小不一致。
+ */
+function PointIcon({ cls }: { cls: PointClass }) {
+  if (cls === 'start') {
+    // 大号三角形：10px 高 × 10px 宽
+    return (
+      <span
+        aria-hidden
+        className="h-0 w-0 shrink-0 border-y-[5px] border-y-transparent border-l-[10px] border-l-current"
+      />
+    );
+  }
+  if (cls === 'end') {
+    // 大号实心正方形，与三角形整体尺寸一致
+    return <span aria-hidden className="h-[10px] w-[10px] shrink-0 bg-current" />;
+  }
+  if (cls === 'single') {
+    return <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-current" />;
+  }
+  return (
+    <span aria-hidden className="shrink-0 text-[12px] leading-none">
+      ⚑
+    </span>
+  );
+}
 
 export function CalendarPage() {
   const [params, setParams] = useSearchParams();
   const gameName = useGameName();
   const gamesQuery = useGames();
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const gameId = params.get('gameId') ?? '';
   const type = params.get('type') ?? '';
-  const month = params.get('month') ?? currentCstMonth();
+  const rawMonth = params.get('month');
+  const month = rawMonth && /^\d{4}-\d{2}$/.test(rawMonth) ? rawMonth : currentCstMonth();
 
   const patch = (values: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -67,23 +113,42 @@ export function CalendarPage() {
     setParams(next, { replace: true });
   };
 
+  // 可见月份覆盖的闭区间，含跨月活动
+  const monthRange = useMemo(() => {
+    const [year, monthNum] = month.split('-').map(Number);
+    const next = monthNum === 12 ? `${year + 1}-01` : `${year}-${String(monthNum + 1).padStart(2, '0')}`;
+    return { start: cstDateStart(`${month}-01`)!, end: cstDateStart(`${next}-01`)! - 1 };
+  }, [month]);
+
   const entriesQuery = useQuery({
-    queryKey: ['entries-calendar', { gameId, type }],
-    queryFn: () => api.entries({ gameId, type, limit: 1000 }),
+    queryKey: ['entries-calendar', { gameId, type, from: monthRange.start, to: monthRange.end }],
+    queryFn: () =>
+      api.entries({ gameId, type, from: monthRange.start, to: monthRange.end, sort: 'start', limit: 500 }),
     placeholderData: keepPreviousData,
   });
 
-  const model = useMemo(() => buildMonthModel(entriesQuery.data?.items ?? [], month), [entriesQuery.data, month]);
+  const unanchoredQuery = useQuery({
+    queryKey: ['entries-unanchored', { gameId, type }],
+    queryFn: () => api.entries({ gameId, type, status: 'unknown', limit: 100 }),
+    placeholderData: keepPreviousData,
+  });
+
+  const entries = entriesQuery.data?.items ?? [];
+  const model = useMemo(() => buildMonthModel(entries, month), [entries, month]);
+  // status=unknown 覆盖「缺开始时间」，这里只保留起止皆空的条目，避免与网格里的结束点重复
+  const unanchored = (unanchoredQuery.data?.items ?? []).filter(
+    (e) => e.startAt === undefined && e.endAt === undefined,
+  );
 
   const [year, monthNum] = month.split('-').map(Number);
   const prevMonth = monthNum === 1 ? `${year - 1}-12` : `${year}-${String(monthNum - 1).padStart(2, '0')}`;
   const nextMonth = monthNum === 12 ? `${year + 1}-01` : `${year}-${String(monthNum + 1).padStart(2, '0')}`;
 
-  const toggleDay = (index: number) => {
+  const toggleDay = (dateStr: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
+      if (next.has(dateStr)) next.delete(dateStr);
+      else next.add(dateStr);
       return next;
     });
   };
@@ -94,50 +159,61 @@ export function CalendarPage() {
     <div className="space-y-3">
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-3 text-[13px]">
-            <button type="button" className="rounded border border-line px-2 py-0.5" onClick={() => patch({ month: prevMonth })}>
-              ‹ 上月
+          <div className="flex items-center gap-1">
+            <button type="button" className={btnSecondary} aria-label="上个月" onClick={() => patch({ month: prevMonth })}>
+              ‹
             </button>
-            <button type="button" className="rounded border border-line px-2 py-0.5" onClick={() => patch({ month: nextMonth })}>
-              下月 ›
-            </button>
-            <button type="button" className="rounded border border-line px-2 py-0.5" onClick={() => patch({ month: null })}>
-              今天
-            </button>
-          </div>
-          <div className="flex items-center gap-2 text-[15px] font-semibold">
-            {month}
             <input
               type="month"
-              className="rounded border border-line px-1 py-0.5 text-[12px] font-normal"
+              className={fieldClass}
+              aria-label="选择月份"
               value={month}
               onChange={(e) => {
                 if (/^\d{4}-\d{2}$/.test(e.target.value)) patch({ month: e.target.value });
               }}
             />
+            <button type="button" className={btnSecondary} aria-label="下个月" onClick={() => patch({ month: nextMonth })}>
+              ›
+            </button>
+            <button type="button" className={`${btnSecondary} ml-1`} onClick={() => patch({ month: null })}>
+              回到今天
+            </button>
           </div>
+          <span className="text-[12px] text-muted">
+            {entriesQuery.isFetching ? '加载中…' : `${month} · 本月 ${entries.length} 条`}
+          </span>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px]">
-          <span className="text-muted">图例：</span>
-          <span className={`rounded px-1 ${POINT_STYLE.start}`}>始</span>
-          <span className="text-muted">开始</span>
-          <span className={`rounded px-1 ${POINT_STYLE.end}`}>终</span>
-          <span className="text-muted">结束</span>
-          <span className={`rounded px-1 ${POINT_STYLE.reward}`}>奖</span>
-          <span className="text-muted">奖励截止</span>
-          <span className="rounded bg-neutral-weak px-1 text-ink-soft">活动名</span>
-          <span className="text-muted">持续中（跨天）</span>
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
+          <span className="inline-flex items-center gap-1 text-ok">
+            <PointIcon cls="start" />
+            开始
+          </span>
+          <span className="inline-flex items-center gap-1 text-danger">
+            <PointIcon cls="end" />
+            结束
+          </span>
+          <span className="inline-flex items-center gap-1 text-warn">
+            <PointIcon cls="reward" />
+            奖励截止
+          </span>
+          <span className="inline-flex items-center gap-1 text-ink-soft">
+            <PointIcon cls="single" />
+            单日活动
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span aria-hidden className="inline-flex h-2.5 w-9 items-center rounded-sm bg-neutral-weak px-0.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-ink-soft" />
+              <span className="ml-auto h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] border-l-ink-soft" />
+            </span>
+            跨天持续（左圆点 = 开始，右三角 = 结束）
+          </span>
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-3 text-[13px]">
           <label className="flex items-center gap-1">
             <span className="text-muted">游戏</span>
-            <select
-              className="rounded border border-line bg-surface px-1.5 py-1"
-              value={gameId}
-              onChange={(e) => patch({ gameId: e.target.value || null })}
-            >
+            <select className={fieldClass} value={gameId} onChange={(e) => patch({ gameId: e.target.value || null })}>
               <option value="">全部</option>
               {(gamesQuery.data?.items ?? []).map((g) => (
                 <option key={g.id} value={g.id}>
@@ -148,11 +224,7 @@ export function CalendarPage() {
           </label>
           <label className="flex items-center gap-1">
             <span className="text-muted">分类</span>
-            <select
-              className="rounded border border-line bg-surface px-1.5 py-1"
-              value={type}
-              onChange={(e) => patch({ type: e.target.value || null })}
-            >
+            <select className={fieldClass} value={type} onChange={(e) => patch({ type: e.target.value || null })}>
               <option value="">全部</option>
               {ENTRY_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -163,104 +235,121 @@ export function CalendarPage() {
           </label>
           <button
             type="button"
-            className="rounded border border-line px-2 py-1"
+            className={btnSecondary}
             onClick={() => {
               setExpanded(new Set());
               patch({ gameId: null, type: null });
             }}
           >
-            重置
+            重置筛选
           </button>
-          <span className="text-[12px] text-muted">点击单元格空白或 +N 展开/收起当日全部事件</span>
+          <span className="text-[12px] text-muted">当日超过 3 条时用 +N 展开</span>
         </div>
       </Card>
 
-      <QueryState loading={entriesQuery.isLoading} error={entriesQuery.error} />
+      <QueryState loading={false} error={entriesQuery.error} onRetry={() => entriesQuery.refetch()} />
 
-      {entriesQuery.data ? (
-        <Card className="overflow-hidden p-0">
-          <div className="grid grid-cols-7 border-b border-line bg-bg text-center text-[12px] text-muted">
-            {['一', '二', '三', '四', '五', '六', '日'].map((d) => (
-              <div key={d} className="py-1">
-                {d}
-              </div>
-            ))}
-          </div>
+      {/* 固定渲染网格：数据到达前后高度一致，不会整块跳动 */}
+      <Card className="overflow-hidden p-0">
+        <div className="grid grid-cols-7 border-b border-line bg-bg text-center text-[12px] text-muted">
+          {['一', '二', '三', '四', '五', '六', '日'].map((d) => (
+            <div key={d} className="py-1">
+              {d}
+            </div>
+          ))}
+        </div>
 
-          {model.weeks.map((week) => (
-            <div key={week.index} className="border-b border-line last:border-b-0">
-              {week.segments.map((seg, i) => {
-                const theme = gameTheme(seg.gameId);
-                return (
-                  <div key={`${seg.entryId}-${i}`} className="grid grid-cols-7 gap-x-1 px-1 pt-1">
+        {model.weeks.map((week) => (
+          <div key={week.index} className="border-b border-line last:border-b-0">
+            {week.lanes.map((lane, laneIndex) => (
+              <div key={`lane-${laneIndex}`} className="grid grid-cols-7 gap-x-1 px-1 pt-1">
+                {lane.map((seg) => {
+                  const theme = gameTheme(seg.gameId);
+                  return (
                     <a
+                      key={`${seg.entryId}-${seg.colStart}`}
                       href={`/app/all?entry=${encodeURIComponent(seg.entryId)}`}
-                      className="block truncate rounded px-1.5 text-[11px]"
-                      style={{ gridColumn: `${seg.colStart + 1} / span ${seg.colspan}`, background: theme.bg, color: theme.fg, borderLeft: `3px solid ${theme.accent}` }}
+                      className="flex min-w-0 items-center gap-1 overflow-hidden rounded px-1.5 text-[11px]"
+                      style={{
+                        gridColumn: `${seg.colStart + 1} / span ${seg.colspan}`,
+                        background: theme.bg,
+                        color: theme.fg,
+                        borderLeft: `3px solid ${theme.accent}`,
+                      }}
                       title={seg.tip}
                     >
-                      {seg.lead}
-                      {seg.title}
-                      {seg.trail}
-                    </a>
-                  </div>
-                );
-              })}
-
-              <div className="grid grid-cols-7 gap-x-1 p-1">
-                {week.days.map((day, col) => {
-                  if (day === null) return <div key={`pad-${week.index}-${col}`} className="min-h-[84px] rounded bg-bg-sunk" />;
-                  const isExpanded = expanded.has(day.index);
-                  const visible = isExpanded ? day.points : day.points.slice(0, MAX_PER_CELL);
-                  const rest = day.points.length - MAX_PER_CELL;
-                  const weekend = day.col >= 5;
-                  const isToday = day.dateStr === today;
-                  return (
-                    <div
-                      key={day.index}
-                      className={`min-h-[84px] cursor-pointer rounded border border-line px-1 pb-1 ${weekend ? 'bg-weekend' : 'bg-surface'} ${isToday ? 'ring-1 ring-inset ring-brand' : ''}`}
-                      onClick={() => toggleDay(day.index)}
-                    >
-                      <div className={`text-[11px] ${isToday ? 'font-semibold text-brand' : 'text-muted'}`}>{day.index + 1}</div>
-                      {visible.map((p, i) => (
-                        <a
-                          key={`${p.entryId}-${p.cls}-${i}`}
-                          href={`/app/all?entry=${encodeURIComponent(p.entryId)}`}
-                          className={`mt-0.5 block truncate rounded px-1 text-[11px] ${POINT_STYLE[p.cls]}`}
-                          title={p.tip}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {p.text}
-                        </a>
-                      ))}
-                      {rest > 0 ? (
-                        <button
-                          type="button"
-                          className="mt-0.5 block w-full text-left text-[11px] text-muted hover:text-ink hover:underline"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleDay(day.index);
-                          }}
-                        >
-                          {isExpanded ? '收起' : `+${rest}`}
-                        </button>
+                      {seg.startMark ? (
+                        <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
                       ) : null}
-                    </div>
+                      <span className="truncate">
+                        {seg.lead}
+                        {seg.title}
+                        {seg.trail}
+                      </span>
+                      {seg.endMark ? (
+                        <span
+                          aria-hidden
+                          className="ml-auto h-0 w-0 shrink-0 border-y-[3px] border-y-transparent border-l-[5px] border-l-current"
+                        />
+                      ) : null}
+                    </a>
                   );
                 })}
               </div>
-            </div>
-          ))}
-        </Card>
-      ) : null}
+            ))}
 
-      {model.unanchored.length > 0 ? (
+            <div className="grid grid-cols-7 gap-x-1 p-1">
+              {week.days.map((day, col) => {
+                if (day === null) return <div key={`pad-${week.index}-${col}`} className="min-h-[84px] rounded bg-bg-sunk" />;
+                const isExpanded = expanded.has(day.dateStr);
+                const visible = isExpanded ? day.points : day.points.slice(0, MAX_PER_CELL);
+                const rest = day.points.length - MAX_PER_CELL;
+                const weekend = day.col >= 5;
+                const isToday = day.dateStr === today;
+                return (
+                  <div
+                    key={day.dateStr}
+                    className={`min-h-[84px] rounded border border-line px-1 pb-1 ${weekend ? 'bg-weekend' : 'bg-surface'} ${isToday ? 'ring-1 ring-inset ring-brand' : ''}`}
+                  >
+                    <div className={`text-[11px] ${isToday ? 'font-semibold text-brand' : 'text-muted'}`}>{day.index + 1}</div>
+                    {visible.map((p, i) => (
+                      <a
+                        key={`${p.entryId}-${p.cls}-${i}`}
+                        href={`/app/all?entry=${encodeURIComponent(p.entryId)}`}
+                        className={`mt-0.5 flex items-center gap-1 truncate rounded px-1 text-[11px] ${POINT_STYLE[p.cls]}`}
+                        title={p.tip}
+                      >
+                        <PointIcon cls={p.cls} />
+                        <span className="truncate">{p.text}</span>
+                      </a>
+                    ))}
+                    {rest > 0 ? (
+                      <button
+                        type="button"
+                        className="mt-0.5 block w-full rounded text-left text-[11px] text-muted hover:text-ink hover:underline"
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleDay(day.dateStr)}
+                      >
+                        {isExpanded ? '收起' : `+${rest}`}
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </Card>
+
+      {!entriesQuery.isLoading && entries.length === 0 ? <Empty>当月无任何条目</Empty> : null}
+
+      {unanchored.length > 0 ? (
         <Card>
           <h2 className="mb-1 border-l-4 border-brand pl-2 text-[15px] font-semibold">
-            待锚定条目 <span className="text-[12px] font-normal text-muted">（{model.unanchored.length}，仅有引用型时间）</span>
+            时间待确认 <span className="text-[12px] font-normal text-muted">（{unanchored.length}，只有引用型时间）</span>
           </h2>
           <ul className="divide-y divide-line text-[13px]">
-            {model.unanchored.map((e) => (
+            {unanchored.map((e) => (
               <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
                 <span className="text-muted">{gameName(e.gameId)}</span>
                 <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
@@ -272,29 +361,25 @@ export function CalendarPage() {
           </ul>
         </Card>
       ) : null}
-
-      {entriesQuery.data && model.weeks.length === 0 ? <Empty>当月无任何条目</Empty> : null}
     </div>
   );
 }
 
-/** 把条目铺进指定月份：返回周列表、跨天持续条与待锚定条目 */
+/** 把条目铺进指定月份：返回周列表、跨天持续条泳道与待锚定条目 */
 function buildMonthModel(
   entries: EntryDto[],
   month: string,
 ): {
   weeks: {
     index: number;
-    segments: { colStart: number; colspan: number; lead: string; trail: string; title: string; tip: string; gameId: string; entryId: string }[];
+    lanes: Segment[][];
     days: ({ index: number; col: number; dateStr: string; points: DayPoint[] } | null)[];
   }[];
-  unanchored: EntryDto[];
 } {
-  const monthStart = Math.floor(Date.parse(`${month}-01T00:00:00+08:00`) / 1000);
+  const monthStart = cstDateStart(`${month}-01`)!;
   const [year, monthNum] = month.split('-').map(Number);
-  const nextYear = monthNum === 12 ? year + 1 : year;
-  const nextMonth = monthNum === 12 ? 1 : monthNum + 1;
-  const monthEnd = Math.floor(Date.parse(`${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00+08:00`) / 1000);
+  const next = monthNum === 12 ? `${year + 1}-01` : `${year}-${String(monthNum + 1).padStart(2, '0')}`;
+  const monthEnd = cstDateStart(`${next}-01`)!;
   const days = Math.round((monthEnd - monthStart) / DAY);
   // 当月 1 号是周几（周一=0）
   const firstDow = (new Date((monthStart + 8 * 3600) * 1000).getUTCDay() + 6) % 7;
@@ -302,41 +387,48 @@ function buildMonthModel(
 
   const buckets: DayPoint[][] = Array.from({ length: days }, () => []);
   const spans: Span[] = [];
-  const unanchored: EntryDto[] = [];
 
   for (const e of entries) {
-    if (e.startAt === undefined && e.endAt === undefined) {
-      unanchored.push(e);
-      continue;
-    }
     const estTip = e.estimated ? '（预估）' : '';
     const si = e.startAt !== undefined ? dayIndexOf(e.startAt) : undefined;
     const ei = e.endAt !== undefined ? dayIndexOf(e.endAt) : undefined;
 
-    if (si !== undefined && ei !== undefined && ei >= si && ei >= 0 && si <= days - 1 && ei - si + 1 >= 3) {
-      spans.push({
-        s: Math.max(si, 0),
-        e: Math.min(ei, days - 1),
-        contL: si < 0,
-        contR: ei > days - 1,
-        title: e.title,
-        tip: `持续：${e.title}${estTip}（${fmtBound(e.startAt, e.startTimeKnown)} → ${fmtBound(e.endAt, e.endTimeKnown)}）`,
-        gameId: e.gameId,
-        entryId: e.id,
-      });
+    if (si !== undefined && ei !== undefined && ei > si) {
+      // 跨天活动只保留持续条，起止日不再进当日列表
+      if (ei >= 0 && si <= days - 1) {
+        spans.push({
+          s: Math.max(si, 0),
+          e: Math.min(ei, days - 1),
+          contL: si < 0,
+          contR: ei > days - 1,
+          title: e.title,
+          tip: `持续：${e.title}${estTip}（${fmtBound(e.startAt, e.startTimeKnown)} → ${fmtBound(e.endAt, e.endTimeKnown)}）`,
+          gameId: e.gameId,
+          entryId: e.id,
+        });
+      }
+    } else if (si !== undefined) {
+      // 单日活动，或只有开始时间
+      if (si >= 0 && si < days) {
+        const single = ei === si;
+        buckets[si].push({
+          cls: single ? 'single' : 'start',
+          text: e.title,
+          tip: `${single ? '活动' : '开始'}：${e.title}${estTip}`,
+          entryId: e.id,
+        });
+      }
+    } else if (ei !== undefined && ei >= 0 && ei < days) {
+      // 只有结束时间
+      buckets[ei].push({ cls: 'end', text: e.title, tip: `结束：${e.title}`, entryId: e.id });
     }
-    if (si !== undefined && si >= 0 && si < days) {
-      buckets[si].push({ cls: 'start', text: `始 ${e.title}`, tip: `开始：${e.title}${estTip}`, entryId: e.id });
-    }
-    if (ei !== undefined && ei >= 0 && ei < days) {
-      buckets[ei].push({ cls: 'end', text: `终 ${e.title}`, tip: `结束：${e.title}`, entryId: e.id });
-    }
+
     if (e.rewardEndAt !== undefined) {
       const ri = dayIndexOf(e.rewardEndAt);
       if (ri >= 0 && ri < days) {
         buckets[ri].push({
           cls: 'reward',
-          text: `奖 ${e.title}`,
+          text: e.title,
           tip: `奖励截止：${e.title}（${fmtCst(e.rewardEndAt)}）`,
           entryId: e.id,
         });
@@ -347,7 +439,7 @@ function buildMonthModel(
   const weekCount = Math.ceil((firstDow + days) / 7);
   const weeks = Array.from({ length: weekCount }, (_, w) => {
     const weekStart = w * 7 - firstDow;
-    const segments = spans
+    const segments: Segment[] = spans
       .map((sp) => {
         const a = Math.max(sp.s, weekStart);
         const b = Math.min(sp.e, weekStart + 6);
@@ -367,8 +459,24 @@ function buildMonthModel(
           tip: `${sp.tip}${isFirst && sp.contL ? '（延续自上月）' : ''}${isLast && sp.contR ? '（延续至下月）' : ''}`,
           gameId: sp.gameId,
           entryId: sp.entryId,
+          startMark: isFirst,
+          endMark: isLast,
         };
       });
+
+    // 贪心泳道：同列不重叠的持续条复用一行
+    const laneEnd: number[] = [];
+    const lanes: Segment[][] = [];
+    for (const seg of segments) {
+      let lane = laneEnd.findIndex((end) => end < seg.colStart);
+      if (lane < 0) {
+        lane = laneEnd.length;
+        laneEnd.push(-1);
+        lanes.push([]);
+      }
+      laneEnd[lane] = seg.colStart + seg.colspan - 1;
+      lanes[lane].push(seg);
+    }
 
     const cellDays = Array.from({ length: 7 }, (_, col) => {
       const d = weekStart + col;
@@ -377,8 +485,8 @@ function buildMonthModel(
       return { index: d, col, dateStr, points: buckets[d] };
     });
 
-    return { index: w, segments, days: cellDays };
+    return { index: w, lanes, days: cellDays };
   });
 
-  return { weeks, unanchored };
+  return { weeks };
 }

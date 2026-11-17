@@ -1,19 +1,30 @@
-/* 周视图甘特图样式（仅 /app/week 使用） */
+/* 周视图甘特图样式（仅 /app/week 使用）
+ *
+ * 颜色一律引用 index.css 的语义令牌，本文件不出现十六进制色值。
+ * 状态除颜色外还有第二重编码：未开始用虚线边框，已结束给标题加删除线。
+ */
 
 .gantt-container {
   overflow: auto;
+  /* 预留滚动条槽位：数据到达后竖向滚动条出现不会改变 clientWidth，居中计算才稳定 */
+  scrollbar-gutter: stable;
   position: relative;
-  border: 1px solid #eee;
+  border: 1px solid var(--color-line);
   border-radius: 6px;
-  background: #eef0f3;
+  background: var(--color-bg);
+}
+/* 键盘操作需要可见焦点；容器可聚焦只为方向键平移 */
+.gantt-container:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -1px;
 }
 
 /* 时间轴宽度由组件按精度与范围计算；相对定位为今天线提供包含块 */
 .gantt-timeline {
   position: relative;
-  background: #fff;
+  background: var(--color-surface);
   overflow: clip;
-  box-shadow: 2px 0 0 #c2c8d0;
+  box-shadow: 2px 0 0 var(--color-line);
   --cell-width: 80px;
   --row-height: 32px;
   --group-header-height: 28px;
@@ -25,16 +36,16 @@
   top: 0;
   z-index: 30;
   height: var(--timeline-header-height);
-  background: #fafafa;
-  border-bottom: 1px solid #ddd;
+  background: var(--color-bg-sunk);
+  border-bottom: 1px solid var(--color-line);
   display: flex;
   align-items: stretch;
 }
 .gantt-header-cell {
   flex: 0 0 var(--cell-width);
-  border-right: 1px solid #eee;
+  border-right: 1px solid var(--color-line);
   font-size: 11px;
-  color: #666;
+  color: var(--color-muted);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -42,13 +53,15 @@
   box-sizing: border-box;
   padding: 2px 0;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
 }
 .gantt-header-cell.weekend {
-  background: #fbfaf6;
+  background: var(--color-weekend);
 }
 .gantt-header-cell.today {
-  background: #fff3e0;
-  color: #f5712c;
+  background: var(--color-brand-weak);
+  color: var(--color-brand);
   font-weight: 600;
 }
 
@@ -60,14 +73,14 @@
   z-index: 25;
   width: fit-content;
   height: var(--group-header-height);
-  background: var(--group-bg, #f0f0f0);
-  border-bottom: 1px solid #ccc;
+  background: var(--group-bg, var(--color-neutral-weak));
+  border-bottom: 1px solid var(--color-line);
   display: flex;
   align-items: center;
   padding: 0 10px;
   font-size: 13px;
   font-weight: 600;
-  color: #333;
+  color: var(--color-ink);
   cursor: pointer;
   user-select: none;
   box-sizing: border-box;
@@ -82,16 +95,16 @@
   bottom: 0;
   left: 100%;
   width: 100vw;
-  background: var(--group-bg, #f0f0f0);
-  border-bottom: 1px solid #ccc;
+  background: var(--group-bg, var(--color-neutral-weak));
+  border-bottom: 1px solid var(--color-line);
 }
 .gantt-group-header .gantt-fold {
   margin-right: 5px;
   font-size: 10px;
-  color: #666;
+  color: var(--color-muted);
 }
 .gantt-group-header .count {
-  color: #888;
+  color: var(--color-muted);
   font-weight: normal;
   margin-left: 6px;
   font-size: 12px;
@@ -100,31 +113,49 @@
   display: none;
 }
 
-/* 活动行：行内网格底纹，色条正常流定位 */
+/* 泳道行：同一行内可并排多条，色条按 left/width 绝对定位 */
 .gantt-row {
   position: relative;
   height: var(--row-height);
-  border-bottom: 1px solid #f3f3f3;
-  background-image: linear-gradient(to right, #f5f5f5 1px, transparent 1px);
+  border-bottom: 1px solid var(--color-line);
+  background-image: linear-gradient(to right, var(--color-line) 1px, transparent 1px);
   background-size: var(--cell-width) 100%;
 }
 .gantt-row:hover {
-  background-color: #fafafa;
+  background-color: var(--color-bg-sunk);
+}
+
+/* 小时精度：在每日边界加一条更重的竖线，避免跨天看不出来 */
+.gantt-timeline.is-hour .gantt-row {
+  background-image:
+    linear-gradient(to right, var(--color-line) 1px, transparent 1px),
+    linear-gradient(to right, var(--color-muted) 1px, transparent 1px);
+  background-size: var(--cell-width) 100%, var(--day-width) 100%;
+}
+.gantt-timeline.is-hour .gantt-header-cell.day-start {
+  box-shadow: inset 1px 0 0 var(--color-muted);
 }
 
 .gantt-bar-fill {
-  position: relative;
+  position: absolute;
+  top: 3px;
+  left: 0;
   height: calc(var(--row-height) - 6px);
-  margin-top: 3px;
+  margin: 0;
+  padding: 0;
+  border: 0;
   border-radius: 3px;
   min-width: 2px;
   box-sizing: border-box;
   overflow: visible;
   cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
 }
 .gantt-bar-fill.no-start,
 .gantt-bar-fill.clip-start {
-  border-left: 2px dashed #999;
+  border-left: 2px dashed rgba(255, 255, 255, 0.9);
 }
 .gantt-bar-fill.clip-end,
 .gantt-bar-fill.open-end {
@@ -140,18 +171,24 @@
   height: 0;
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  border-left: 6px solid rgba(255, 255, 255, 0.95);
+  border-left: 6px solid var(--color-surface);
   transform: translateY(-50%);
 }
+
+/* 状态第二重编码：未开始用虚线边框，已结束给标题加删除线 */
 .gantt-bar-fill.state-future {
-  opacity: 0.45;
+  opacity: 0.55;
+  border: 1px dashed rgba(255, 255, 255, 0.9);
 }
 .gantt-bar-fill.state-active {
   opacity: 1;
 }
 .gantt-bar-fill.state-ended {
-  background-color: #bbb !important;
-  opacity: 0.7;
+  background-color: var(--color-muted) !important;
+  opacity: 0.75;
+}
+.gantt-bar-fill.state-ended .gantt-name {
+  text-decoration: line-through;
 }
 
 /* 活动名在色条内部 sticky 到视口左缘；宽度收缩到内容宽度才能触发横向 sticky */
@@ -170,8 +207,8 @@
   box-sizing: border-box;
 }
 .gantt-name {
-  font-size: 12px;
-  color: #fff;
+  font-size: 14px;
+  color: var(--color-surface);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -180,17 +217,18 @@
 }
 .gantt-chip {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 12px;
   padding: 1px 5px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.25);
-  color: #fff;
+  color: var(--color-surface);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 今天线：纵向 sticky 贴在表头下，横向按 margin-left 定位 */
+/* 今天线：纵向 sticky 贴在表头下，横向按 margin-left 定位。
+ * 位置由组件给到今日格中心，再用 translateX(-50%) 让 2px 线宽的中轴线落在该点。 */
 .gantt-today-line {
   position: sticky;
   top: var(--timeline-header-height);
@@ -198,13 +236,14 @@
   width: 2px;
   height: calc(var(--gantt-h, 400px) - var(--timeline-header-height));
   margin-bottom: calc((var(--gantt-h, 400px) - var(--timeline-header-height)) * -1);
-  background: #e01b24;
+  transform: translateX(-50%);
+  background: var(--color-brand);
   pointer-events: none;
 }
 
 .gantt-empty {
   padding: 40px;
   text-align: center;
-  color: #999;
+  color: var(--color-muted);
   font-size: 14px;
 }

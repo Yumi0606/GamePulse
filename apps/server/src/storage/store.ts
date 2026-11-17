@@ -1206,7 +1206,10 @@ export async function queryEntries(
     params.push(like, like, like);
   }
   if (input.to !== undefined) {
-    where.push('start_at IS NOT NULL AND start_at <= ?');
+    // 只有结束时间的条目也参与区间判断：缺开始视为从 -∞ 开始；
+    // 起止皆空不属于任何区间，排除掉，避免混进日历/周视图窗口查询
+    where.push('(start_at IS NOT NULL OR end_at IS NOT NULL)');
+    where.push('(start_at IS NULL OR start_at <= ?)');
     params.push(input.to);
   }
   if (input.from !== undefined) {

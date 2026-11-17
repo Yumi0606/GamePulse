@@ -35,7 +35,7 @@ src/
 - 时间展示走共享包 `fmtCst` / 本地 `fmtDate`，固定 `Asia/Shanghai`；禁止 `toISOString()`。
 - 筛选、分页、月份等状态以 URL query 为唯一真源；localStorage 不存业务状态。
 - 时间粒度：`startTimeKnown/endTimeKnown === false` 时只显示日期。
-- 日历/周视图一次拉全量（`limit=1000`）在前端切分；条目量级到千级以上再改为区间查询。
+- 日历按月、周视图按可见时间窗口向 `/api/v1/entries` 传 `from` / `to` 取数，不再拉全量；无开始时间的条目用 `status=unknown` 单独查一次。
 - 深链定位条目用 `/app/all?entry=<id>`，列表页据此按 `id` 过滤并忽略状态筛选；旧链接 `/app?entry=` 自动重定向。
 
 ## 单端口开发形态
