@@ -5,7 +5,7 @@
 ## 项目定位
 
 - 本仓库是**数据源整合管道**：多平台社媒源 → 归一化 → OCR → LLM 结构化 → SQLite + RSS 产物。
-- **后端单实例 + 多形态前端**：数据验收前端在本仓库 `apps/web`（React），监控看板仍是**独立仓库**；所有前端（含未来移动端）只能通过 `/api/v1` 或 RSS 消费数据，不得直连 `data/feed.db`。
+- **后端单实例 + 多形态前端**：数据验收前端在本仓库 `apps/web`（React）；监控看板、通知等应用作为同一 monorepo 内的独立 app，通过 `/api/v1` 或 RSS 消费数据，不得直连 `data/feed.db`。
 - `/rss/*` 的 URL 形态与 `gp:` 扩展命名空间是已订阅用户的外部契约，重构不得改动。
 - 不做 B站 API 直连抓取（风控成本高），源接入统一走适配器模式（当前：自建 RSSHub）。
 - **前后端分离重构进行中**：`apps/server/src/web` 仍提供旧版 HTML 页面；新前端 `apps/web` 挂在 `/app`（已实现四页），新旧两套共存于同一服务进程。
@@ -46,12 +46,13 @@ _research/      探针脚本（不入 apps/server/src）
 - `packages/shared/` 不得依赖 `apps/*`；`apps/web` 不得 import `apps/server` 内部模块，只能通过 HTTP 与共享包交互。
 - 业务判定（条目状态、时区格式化、游戏列表）只在服务端或共享包实现，前端不得复刻一份。
 - 数据目录与日志目录经 `core/paths.ts` 按模块位置回溯到仓库根，不依赖进程工作目录（pnpm 脚本的 cwd 是包目录）。
-- 条目最终形态与合并语义见 [活动匹配原理.md](活动匹配原理.md)；需求与验收条目见 [待办.md](待办.md)。
+- 项目业务规范见 [SPEC.md](SPEC.md)；需求与验收条目见 [TODO.md](TODO.md)。`docs/` 下的文档是历史调研与技术说明，不作为口径依据。
 
 ## 按目录阅读
 
 | 位置 | 内容 |
 |---|---|
+| [SPEC.md](SPEC.md) | 唯一业务规范：术语、来源与条目、时间、生命周期、状态与展示口径、数据质量 |
 | [apps/server/src/sources/CLAUDE.md](apps/server/src/sources/CLAUDE.md) | RSSHub 适配器、抓取窗口、去重、接入新源 |
 | [apps/server/src/processing/CLAUDE.md](apps/server/src/processing/CLAUDE.md) | OCR 客户端、LLM 结构化 Prompt 约定、召回、幂等与失败重试 |
 | [apps/server/src/storage/CLAUDE.md](apps/server/src/storage/CLAUDE.md) | 三表结构、条目身份、跨动态合并、迁移 |
