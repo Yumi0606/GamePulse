@@ -18,7 +18,7 @@ src/
 
 | 路径 | 页面 | 定位 |
 |---|---|---|
-| `/app` | HomePage | 即将到期：按今天 / 3 天内 / 本周 / 更晚 / 未定分组 |
+| `/app` | HomePage | 即将到期：按今天 / 3 天内 / 7 天内 / 14 天内 / 更晚 / 未定分组 |
 | `/app/all` | ListPage | 全部活动（筛选 + 分页归档） |
 | `/app/calendar` | CalendarPage | 月历 |
 | `/app/week` | WeekPage | 甘特周视图 |

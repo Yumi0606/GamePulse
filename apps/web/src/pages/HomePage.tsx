@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { EntryDto, PostDto } from '@gamepulse/shared';
 import { ENTRY_TYPES, ENTRY_TYPE_LABEL, cstStartOfDay, fmtCst } from '@gamepulse/shared';
 import { api } from '../lib/api';
-import { cstDayDiff, cstWeekEnd, fmtRelative } from '../lib/format';
+import { cstDayDiff, fmtRelative } from '../lib/format';
 import { useDebouncedQueryParam, useGameName, useGames } from '../lib/hooks';
 import { EntryCard } from '../components/EntryCard';
 import { FilterField, FilterGrid, FilterPanel, controlClass } from '../components/Filters';
@@ -24,24 +24,29 @@ import { Card, Empty, Pagination, QueryState } from '../components/ui';
 const ACTIVE_LIMIT = 300;
 const UPCOMING_LIMIT = 100;
 const REWARD_LIMIT = 100;
-/** 桶内分页条数：首页是概览，一屏内能看完一组即可 */
-const PAGE_SIZE = 10;
+/** 每个区块默认的分页条数：按距今天数分级，一屏内能看完一组即可 */
+const DUE_PAGE_SIZE = 10;
+const LIST_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
 
-type DueBucketKey = 'today' | 'soon' | 'week' | 'later';
+type DueBucketKey = 'today' | 'soon' | 'week' | 'fortnight' | 'later';
 
+/** 分桶按距截止日期的自然日差划分，与周起始日无关 */
 const DUE_BUCKETS: { key: DueBucketKey; title: string; note?: string }[] = [
   { key: 'today', title: '今天截止', note: '今天内结束，优先处理' },
   { key: 'soon', title: '3 天内截止' },
-  { key: 'week', title: '本周内截止' },
+  { key: 'week', title: '7 天内截止' },
+  { key: 'fortnight', title: '14 天内截止' },
   { key: 'later', title: '更晚' },
 ];
 
-/** 默认折叠的桶：近期要处理的展开，远期先收起 */
+/** 默认折叠的桶：全部展开，由用户自行收起 */
 const DEFAULT_COLLAPSED: Record<DueBucketKey, boolean> = {
   today: false,
   soon: false,
   week: false,
-  later: true,
+  fortnight: false,
+  later: false,
 };
 
 /** 奖励截止是否尚未过去（按北京时间自然日，与状态判定口径一致） */
@@ -75,6 +80,8 @@ export function HomePage() {
   const keyword = params.get('q') ?? '';
   // 关键词输入防抖后写回 URL，与其余页面保持同一套筛选参数
   const [keywordDraft, setKeywordDraft] = useDebouncedQueryParam('q');
+  // 「即将到期」总栏折叠状态：只影响浏览，不写进 URL
+  const [dueOpen, setDueOpen] = useState(true);
 
   const patch = (values: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -151,14 +158,14 @@ export function HomePage() {
   }, [activeQuery.data, now]);
 
   const dueBuckets = useMemo(() => {
-    const weekEnd = cstWeekEnd(now);
     const buckets = new Map<DueBucketKey, EntryDto[]>(DUE_BUCKETS.map((b) => [b.key, []]));
     for (const entry of due) {
       const deadline = keyDeadline(entry, now) ?? 0;
       const diff = cstDayDiff(now, deadline);
       if (diff <= 0) buckets.get('today')!.push(entry);
       else if (diff <= 3) buckets.get('soon')!.push(entry);
-      else if (deadline <= weekEnd) buckets.get('week')!.push(entry);
+      else if (diff <= 7) buckets.get('week')!.push(entry);
+      else if (diff <= 14) buckets.get('fortnight')!.push(entry);
       else buckets.get('later')!.push(entry);
     }
     return buckets;
@@ -275,17 +282,37 @@ export function HomePage() {
 
       {due.length > 0 ? (
         <div className="space-y-3">
-          <h2 className="border-l-4 border-brand pl-2 text-[15px] font-semibold">
-            即将到期 <span className="text-[12px] font-normal tabular-nums text-muted">{due.length} 个</span>
-          </h2>
-          {DUE_BUCKETS.map((bucket) => {
-            const list = dueBuckets.get(bucket.key) ?? [];
-            if (list.length === 0) return null;
-            return <BucketSection key={bucket.key} bucket={bucket} list={list} gameName={gameName} now={now} />;
-          })}
+          <div>
+            <button
+              type="button"
+              className="flex flex-wrap items-baseline gap-2 text-left"
+              aria-expanded={dueOpen}
+              onClick={() => setDueOpen((value) => !value)}
+            >
+              <span className="border-l-4 border-brand pl-2 text-[15px] font-semibold">即将到期</span>
+              <span className="text-[12px] font-normal tabular-nums text-muted">{due.length} 个</span>
+              <span className="text-[12px] font-normal text-brand">{dueOpen ? '收起' : '展开'}</span>
+            </button>
+          </div>
+          {dueOpen
+            ? DUE_BUCKETS.map((bucket) => {
+                const list = dueBuckets.get(bucket.key) ?? [];
+                if (list.length === 0) return null;
+                return <BucketSection key={bucket.key} bucket={bucket} list={list} gameName={gameName} now={now} />;
+              })
+            : null}
         </div>
       ) : null}
 
+      <ListSection
+        title="奖励待领取"
+        note="活动已结束，奖励领取截止还没过"
+        list={rewards}
+        gameName={gameName}
+        now={now}
+        rewardKey
+      />
+      
       <ListSection
         title="即将开始"
         note="开始时间在未来，按开始时间排列"
@@ -303,14 +330,6 @@ export function HomePage() {
         defaultOpen={true}
       />
 
-      <ListSection
-        title="奖励待领取"
-        note="活动已结束，奖励领取截止还没过"
-        list={rewards}
-        gameName={gameName}
-        now={now}
-        rewardKey
-      />
 
       {truncated ? (
         <div className="text-[12px] text-muted">
@@ -341,11 +360,26 @@ function BucketSection({
 }) {
   const [open, setOpen] = useState(!DEFAULT_COLLAPSED[bucket.key]);
   const [page, setPage] = useState(1);
-  const pageCount = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const [pageSize, setPageSize] = useState(DUE_PAGE_SIZE);
+  const pageCount = Math.max(1, Math.ceil(list.length / pageSize));
   const current = Math.min(page, pageCount);
-  const visible = list.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const visible = list.slice((current - 1) * pageSize, current * pageSize);
+  // 条目数不超过默认每页条数时不显示分页条，直接整组展示；
+  // 超过时始终保留，避免用户把每页条数调大后失去改回小值的入口
   const pager =
-    pageCount > 1 ? <Pagination page={current} pageSize={PAGE_SIZE} total={list.length} onChange={setPage} /> : null;
+    list.length > Math.min(pageSize, DUE_PAGE_SIZE) ? (
+      <Pagination
+        page={current}
+        pageSize={pageSize}
+        total={list.length}
+        onChange={setPage}
+        onPageSizeChange={(size) => {
+          setPageSize(size);
+          setPage(1);
+        }}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+      />
+    ) : null;
 
   return (
     <section>
@@ -405,11 +439,25 @@ function ListSection({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [page, setPage] = useState(1);
-  const pageCount = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const [pageSize, setPageSize] = useState(LIST_PAGE_SIZE);
+  const pageCount = Math.max(1, Math.ceil(list.length / pageSize));
   const current = Math.min(page, pageCount);
-  const visible = list.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const visible = list.slice((current - 1) * pageSize, current * pageSize);
+  // 与「即将到期」同口径：不超过默认每页条数时整组展示，不分页也不给控件
   const pager =
-    pageCount > 1 ? <Pagination page={current} pageSize={PAGE_SIZE} total={list.length} onChange={setPage} /> : null;
+    list.length > Math.min(pageSize, LIST_PAGE_SIZE) ? (
+      <Pagination
+        page={current}
+        pageSize={pageSize}
+        total={list.length}
+        onChange={setPage}
+        onPageSizeChange={(size) => {
+          setPageSize(size);
+          setPage(1);
+        }}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+      />
+    ) : null;
 
   return (
     <section>
