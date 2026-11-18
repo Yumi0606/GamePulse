@@ -300,7 +300,7 @@ export function HomePage() {
         list={undated}
         gameName={gameName}
         now={now}
-        defaultOpen={false}
+        defaultOpen={true}
       />
 
       <ListSection
