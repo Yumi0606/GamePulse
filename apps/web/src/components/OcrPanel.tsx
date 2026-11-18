@@ -34,7 +34,8 @@ export function OcrPanel({ postId, imageCount }: { postId: string; imageCount?: 
               open={index === 0}
               className="rounded border border-line bg-bg"
             >
-              <summary className="flex flex-wrap items-center gap-2 px-2 py-1">
+              {/* summary 覆盖全局 select-none：图片地址与状态需要能被划选复制 */}
+              <summary className="flex flex-wrap items-center gap-2 px-2 py-1 select-text">
                 <Badge tone={img.status === 'ok' ? 'ok' : img.status === 'failed' ? 'danger' : 'neutral'}>
                   {img.status}
                 </Badge>
