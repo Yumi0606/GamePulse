@@ -186,22 +186,34 @@ export function EntryCard({
                 const post = postById.get(id);
                 return (
                   <li key={id} className="rounded border border-line bg-surface p-1.5">
-                    {/* 标题统一跳原始动态页并定位该条；未加载 PostDto（如首页）时用 id 作可点击文本 */}
-                    <div className="flex flex-wrap items-baseline gap-2">
-                      <Link
-                        className={post ? 'text-ink hover:text-brand' : 'font-mono text-brand hover:underline'}
-                        to={`/posts?id=${encodeURIComponent(id)}`}
-                      >
-                        {post ? post.title : id}
-                      </Link>
-                      {post ? <span className="text-muted">发布于 {fmtCst(post.publishedAt)}</span> : null}
-                      {post?.url ? (
-                        <a href={post.url} target="_blank" rel="noreferrer" title="打开平台原始地址">
-                          原始地址
+                    {post ? (
+                      <>
+                        {/* 标题跳原始动态页并定位该条；原始地址是平台侧原文入口 */}
+                        <div className="flex flex-wrap items-baseline gap-2">
+                          <Link className="text-ink hover:text-brand" to={`/posts?id=${encodeURIComponent(id)}`}>
+                            {post.title}
+                          </Link>
+                          <span className="text-muted">发布于 {fmtCst(post.publishedAt)}</span>
+                          {post.url ? (
+                            <a href={post.url} target="_blank" rel="noreferrer" title="打开平台原始地址">
+                              原始地址
+                            </a>
+                          ) : null}
+                        </div>
+                        <OcrPanel postId={id} imageCount={post.images?.length} />
+                      </>
+                    ) : (
+                      // 未加载 PostDto（如首页）：不展示 OCR，保留 id 便于核对，并给原始动态页入口
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="font-mono">{id}</span>
+                        <Link className="text-brand hover:underline" to={`/posts?id=${encodeURIComponent(id)}`}>
+                          查看原始动态
+                        </Link>
+                        <a href={`/rss/post?id=${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">
+                          单条 RSS
                         </a>
-                      ) : null}
-                    </div>
-                    {post ? <OcrPanel postId={id} imageCount={post.images?.length} /> : null}
+                      </div>
+                    )}
                   </li>
                 );
               })}
