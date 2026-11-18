@@ -92,7 +92,7 @@ export function HomePage() {
     setParams(next, { replace: true });
   };
 
-  // 深链定位单个条目：老链接 /app?entry=xxx 统一转到归档列表
+  // 深链定位单个条目：老链接 /?entry=xxx 统一转到归档列表
   const entryId = params.get('entry');
 
   const healthQuery = useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 60_000 });

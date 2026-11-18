@@ -8,8 +8,8 @@ import './index.css';
 /**
  * 前端入口。
  *
- * 单端口部署：应用挂在 /app 子路径（Vite base 与 nginx location 一致），
- * 数据只经 /api/v1 获取。路由用 BrowserRouter + basename。
+ * 单端口部署：应用挂在根路径（Vite base 与 nginx / Vite 中间件一致），
+ * 数据只经 /api/v1 获取。路由直接用 BrowserRouter。
  */
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +24,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/app">
+      <BrowserRouter>
         <App />
       </BrowserRouter>
     </QueryClientProvider>

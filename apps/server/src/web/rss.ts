@@ -1,5 +1,8 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Game, Item, Entry, TimeRef, EntryPhase } from '../core/types.js';
 import { ENTRY_TYPE_LABEL } from '../core/types.js';
+import { GAMES } from '../core/games.js';
+import { loadPosts, loadEntries } from '../storage/store.js';
 
 /**
  * RSS 2.0 生成：两类订阅源。
@@ -240,4 +243,85 @@ export function buildSingleEntryRss(entry: Entry, channelLink: string, sourcePos
     },
     entryItemXml(entry, latest, sourcePost),
   );
+}
+
+/** RSS 中的绝对链接前缀；对外契约要求绝对 URL，沿用本进程端口 */
+const BASE = `http://localhost:${Number(process.env.PORT ?? 3000)}`;
+
+/**
+ * RSS 请求处理：旧展示层删除后，本进程只保留这一条对外 HTTP 契约。
+ *
+ * - GET /rss/posts、/rss/posts/<gameId>
+ * - GET /rss/entries、/rss/entries/<gameId>
+ * - GET /rss/post?id=、/rss/entry?id=（条目 id 含 / 与 :，无法作路径段）
+ *
+ * 响应直接写入 res，调用方应先 hijack Fastify 的 reply。
+ */
+export async function handleRssRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? '/', BASE);
+  const path = url.pathname;
+  try {
+    const posts = await loadPosts();
+
+    if (path === '/rss/posts') {
+      res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
+      res.end(buildAggregatedRss(posts, '游戏动态聚合', `${BASE}/`));
+      return;
+    }
+
+    const m = path.match(/^\/rss\/posts\/([\w-]+)$/);
+    if (m) {
+      const game = GAMES.find((g) => g.id === m[1]);
+      if (!game) return notFound(res, '未知游戏');
+      res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
+      res.end(buildGameRss(game, posts));
+      return;
+    }
+
+    if (path === '/rss/entries') {
+      const entries = await loadEntries();
+      res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
+      res.end(buildEntriesRss(entries, '游戏活动排期（结构化）', `${BASE}/`, new Map(posts.map((p) => [p.id, p]))));
+      return;
+    }
+
+    const me = path.match(/^\/rss\/entries\/([\w-]+)$/);
+    if (me) {
+      const game = GAMES.find((g) => g.id === me[1]);
+      if (!game) return notFound(res, '未知游戏');
+      const entries = (await loadEntries()).filter((e) => e.gameId === game.id);
+      res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
+      res.end(buildEntriesRss(entries, `${game.name} 活动排期`, `${BASE}/`, new Map(posts.map((p) => [p.id, p]))));
+      return;
+    }
+
+    if (path === '/rss/post') {
+      const id = url.searchParams.get('id');
+      const post = id ? posts.find((p) => p.id === id) : undefined;
+      if (!post) return notFound(res, '未找到该动态');
+      res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
+      res.end(buildSinglePostRss(post, `${BASE}${path}?id=${encodeURIComponent(post.id)}`));
+      return;
+    }
+
+    if (path === '/rss/entry') {
+      const id = url.searchParams.get('id');
+      const entry = id ? (await loadEntries()).find((e) => e.id === id) : undefined;
+      if (!entry) return notFound(res, '未找到该条目');
+      res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' });
+      const sourcePost = entry.postId ? posts.find((p) => p.id === entry.postId) : undefined;
+      res.end(buildSingleEntryRss(entry, `${BASE}${path}?id=${encodeURIComponent(entry.id)}`, sourcePost));
+      return;
+    }
+
+    notFound(res, 'Not Found');
+  } catch (e) {
+    res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(`服务器错误：${(e as Error).message}`);
+  }
+}
+
+function notFound(res: ServerResponse, text: string): void {
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+  res.end(text);
 }

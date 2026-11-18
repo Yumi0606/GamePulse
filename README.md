@@ -67,13 +67,15 @@ pnpm web
 
 ## 看数据的三种方式
 
-**Web 页面**（默认 `http://localhost:3000`）：
+**Web 页面**（默认 `http://localhost:3000`，生产由 nginx 托管根路径）：
 
 | 路径 | 说明 |
 |---|---|
-| `/` | 列表视图：结构化条目（排期视角）+ 原始动态 |
+| `/` | 首页：即将到期 / 即将开始 / 时间未定 / 奖励待领取 |
+| `/all` | 全部活动：筛选 + 分页归档 |
 | `/calendar?month=YYYY-MM` | 日历视图：活动开始/结束/奖励截止/进行中铺进当月 |
 | `/week?from=YYYY-MM-DD` | 周视图：按游戏分组的甘特式横轴，支持折叠分组与小时/天/周/月精度切换 |
+| `/posts` | 原始动态（数据核验） |
 | `/health` | 源健康：拉取异常与自动恢复状态 |
 
 **RSS 订阅**（原始动态与解析后条目分开）：
@@ -114,11 +116,11 @@ apps/server/src/
                 + maintenance（维护窗口回填）
   storage/      store.ts：SQLite 表（posts / ocr_records / entries / meta / events / maintenance_windows）
   api/          Fastify + Zod：/api/v1/health、/meta、/games（后续 entries / posts）
-  web/          server.ts（Fastify 入口）+ legacy.ts（旧页面/RSS 路由）
-                + page.ts（列表与日历）+ week.ts（周视图）+ rss.ts（RSS 生成）+ assets/
+  web/          server.ts（Fastify 入口）+ dev.ts（Vite 中间件）
+                + rss.ts（RSS 生成与 /rss/* 请求处理）
   scheduler.ts  定时编排：拉取 → OCR → 结构化 → 时间回填
   index.ts      CLI 手动同步
-apps/web/       React 前端（路由 /app：列表 / 日历 / 周视图 / 源健康）
+apps/web/       React 前端（根路径：首页 / 全部活动 / 日历 / 周视图 / 原始动态 / 源健康）
 packages/shared/ 前后端共享 DTO、Zod schema、枚举与 fmtCst
 ocr-service/    RapidOCR Python 侧车
 _research/      调研探针脚本（单条 LLM dry-run、OCR 状态机测试、历史动态注入）

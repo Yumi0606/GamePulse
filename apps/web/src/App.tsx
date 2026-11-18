@@ -16,7 +16,6 @@ import { WeekPage } from './pages/WeekPage';
  * /week        周视图
  * /posts       原始动态（数据核验）
  * /health      源健康（运维）
- * 旧展示层仍在 / /calendar /week /health 提供，过渡期两套共存。
  */
 export function App() {
   return (

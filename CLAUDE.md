@@ -8,7 +8,7 @@
 - **后端单实例 + 多形态前端**：数据验收前端在本仓库 `apps/web`（React）；监控看板、通知等应用作为同一 monorepo 内的独立 app，通过 `/api/v1` 或 RSS 消费数据，不得直连 `data/feed.db`。
 - `/rss/*` 的 URL 形态与 `gp:` 扩展命名空间是已订阅用户的外部契约，重构不得改动。
 - 不做 B站 API 直连抓取（风控成本高），源接入统一走适配器模式（当前：自建 RSSHub）。
-- **前后端分离重构进行中**：`apps/server/src/web` 仍提供旧版 HTML 页面；新前端 `apps/web` 挂在 `/app`（已实现四页），新旧两套共存于同一服务进程。
+- **前后端分离重构已完成**：`apps/web` 是唯一展示层，直接挂在根路径 `/`；`apps/server/src/web` 只保留 Fastify 入口、Vite 开发中间件与 RSS 产物。
 
 ## 技术栈硬事实
 
@@ -19,7 +19,7 @@
 - 时间一律 Unix 秒存储；展示固定 `Asia/Shanghai`（用 `fmtCst`），**禁止直接展示 `toISOString()`**（UTC）。
 - 后端 HTTP 层：Fastify + `fastify-type-provider-zod`（Zod 同时承担校验、序列化白名单与 TS 类型），路由前缀 `/api/v1`，日志复用 pino。
 - 前端：Vite + React + TypeScript + React Router + TanStack Query；样式 Tailwind CSS v4（`@tailwindcss/vite`，无 `tailwind.config.js`，token 写在 `@theme`）。
-- 仓库为 pnpm workspace：`apps/server`（原 `src/` 已迁入）、`apps/web`（React 前端，路由 `/app/*`）、`packages/shared`（DTO、Zod schema、游戏与分类枚举、`fmtCst`）。
+- 仓库为 pnpm workspace：`apps/server`（原 `src/` 已迁入）、`apps/web`（React 前端，根路径路由）、`packages/shared`（DTO、Zod schema、游戏与分类枚举、`fmtCst`）。
 
 ## 目录与依赖方向
 
@@ -30,10 +30,10 @@ apps/server/src/
   processing/   ocr.ts enrich.ts llm.ts extract.ts recall.ts gameRules.ts maintenance.ts semanticAnchor.ts
   storage/      store.ts
   api/          /api/v1 路由（Fastify + Zod）：health / meta / games / entries / posts / posts/:id/ocr / events
-  web/          server.ts（Fastify 入口）dev.ts（Vite 中间件）legacy.ts page.ts rss.ts week.ts
+  web/          server.ts（Fastify 入口）dev.ts（Vite 中间件）rss.ts（RSS 生成与请求处理）
   scheduler.ts  顶层编排：runPipeline → enrichOcr → extractEntries
   index.ts      CLI 手动同步（唯一允许 console.log 的地方）
-apps/web/       React 前端（Vite + Tailwind），路由 /app/*：pages（列表/日历/周视图/健康）components lib
+apps/web/       React 前端（Vite + Tailwind），根路径路由：pages（首页/列表/日历/周视图/动态/健康）components lib
 packages/shared/ DTO、Zod schema、游戏与分类枚举、fmtCst
 ocr-service/    RapidOCR 侧车（Python）
 _research/      探针脚本（不入 apps/server/src）
@@ -65,9 +65,9 @@ _research/      探针脚本（不入 apps/server/src）
 
 - `pnpm build`：按依赖顺序构建 `packages/shared`、`apps/server` 与 `apps/web`（`pnpm -r build`）。
 - `pnpm web` / `pnpm viewonly` / `pnpm sync` 从仓库根启动；`apps/server` 的脚本在包目录启动同样可用（路径已锚定到仓库根）。
-- `pnpm dev`：只读 + 前端开发形态，Vite 以 middlewareMode 挂进 Fastify，3000 同时提供 `/app`（热更新）与 `/api/v1`。生产由 nginx 托管 `apps/web/dist` 到 `/app` 并反代 `/api`，Fastify 不带 `--web-dev`。
+- `pnpm dev`：只读 + 前端开发形态，Vite 以 middlewareMode 挂进 Fastify，3000 同时提供 `/`（热更新）与 `/api/v1`。生产由 nginx 托管 `apps/web/dist` 到根路径并反代 `/api` 与 `/rss`，Fastify 不带 `--web-dev`。
 - `packages/shared` 是构建产物依赖：改完共享包先 `pnpm build` 再启动，否则 tsx/vite 读到的仍是旧 dist。
-- 前端构建产物路径由 `apps/web/vite.config.ts` 的 `base: '/app/'` 固定；nginx 的 `/app` location 必须与之一致。
+- 前端构建产物路径由 `apps/web/vite.config.ts` 的 `base: '/'` 固定；nginx 根 location 必须与之一致。
 
 ## 通用守则
 
@@ -77,8 +77,8 @@ _research/      探针脚本（不入 apps/server/src）
 - **LLM 与 OCR 资源宝贵**：任何改动先做最小验证（离线探针优先，单条其次），证明改动确实有效；**未经用户验收不得进行全量重跑或重置**。
 - 验证顺序：`pnpm build` → 单条探针 dry-run → 需要时 `--save` 落库 → 用户共用实例目检。脚本清单与约束见 `_research/CLAUDE.md`。
 - 展示验证统一使用用户共用的 **3000 端口**，不要另起测试端口。端口被用户实例占用且无权关闭时，请求用户关闭；随后由代理启动并管理这一个实例，与用户共用。正常情况下代码更新后无需重启，先刷新页面；只有新增文件等导致热重载失效时才重启。
-- 开发形态固定为**单端口**：Vite 以 `middlewareMode` 挂进 Fastify，3000 同时提供 `/app` 与 `/api`。生产由 nginx 托管前端构建产物并反代 `/api`；不要为验证另起 5173 / 3100。
-- 新页面只加在 `apps/web`（路由 `/app/*`），旧展示层不再新增页面级功能；前端筛选、分页、月份等状态以 URL query 为唯一真源，业务判定（状态、游戏清单、时间格式）只从共享包或 API 获取。
+- 开发形态固定为**单端口**：Vite 以 `middlewareMode` 挂进 Fastify，3000 同时提供 `/` 与 `/api`。生产由 nginx 托管前端构建产物并反代 `/api` 与 `/rss`；不要为验证另起 5173 / 3100。
+- 新页面只加在 `apps/web`（根路径路由）；前端筛选、分页、月份等状态以 URL query 为唯一真源，业务判定（状态、游戏清单、时间格式）只从共享包或 API 获取。
 - 注释用中文，保留原有注释；模块头部说明职责与数据流向，公共导出写文档注释。
 - 在长任务中，每完成一个可验证的改动立即 build + 探针验证，不要攒大批量。零碎简单的修改不要浪费时间多次build。
 - 提交由用户决定，代理不主动 `git commit`，但主动在多个任务后提醒提交。

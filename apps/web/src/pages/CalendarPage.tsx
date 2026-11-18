@@ -331,7 +331,7 @@ export function CalendarPage() {
                   return (
                     <a
                       key={`${seg.entryId}-${seg.colStart}`}
-                      href={`/app/all?entry=${encodeURIComponent(seg.entryId)}`}
+                      href={`/all?entry=${encodeURIComponent(seg.entryId)}`}
                       className="flex min-w-0 items-center gap-1 overflow-hidden rounded px-1.5 text-[11px]"
                       style={{
                         gridColumn: `${seg.colStart + 1} / span ${seg.colspan}`,
@@ -393,7 +393,7 @@ export function CalendarPage() {
                     {visible.map((p, i) => (
                       <a
                         key={`${p.entryId}-${p.cls}-${i}`}
-                        href={`/app/all?entry=${encodeURIComponent(p.entryId)}`}
+                        href={`/all?entry=${encodeURIComponent(p.entryId)}`}
                         className={`mt-0.5 flex items-center gap-1 truncate rounded px-1 text-[11px] ${POINT_STYLE[p.cls]}`}
                         title={p.tip}
                       >
@@ -450,7 +450,7 @@ export function CalendarPage() {
                 {unanchoredVisible.map((e) => (
                   <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
                     <span className="text-muted">{gameName(e.gameId)}</span>
-                    <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
+                    <a href={`/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
                     <span className="text-[12px] text-muted">
                       {[e.startRef?.refText, e.endRef?.refText]
                         .filter(Boolean)

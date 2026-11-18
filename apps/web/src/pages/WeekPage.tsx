@@ -938,7 +938,7 @@ export function WeekPage() {
             {unanchored.map((e) => (
               <li key={e.id} className="flex flex-wrap items-baseline gap-2 py-1.5">
                 <span className="text-muted">[{gameName(e.gameId)}]</span>
-                <a href={`/app/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
+                <a href={`/all?entry=${encodeURIComponent(e.id)}`}>{e.title}</a>
               </li>
             ))}
           </ul>
@@ -965,7 +965,7 @@ export function WeekPage() {
           </div>
           {popover.entry.summary ? <div className="mt-1.5">{popover.entry.summary}</div> : null}
           <div className="mt-2 text-[12px]">
-            <a href={`/app/all?entry=${encodeURIComponent(popover.entry.id)}`}>在列表中定位 →</a>
+            <a href={`/all?entry=${encodeURIComponent(popover.entry.id)}`}>在列表中定位 →</a>
           </div>
         </div>
       ) : null}

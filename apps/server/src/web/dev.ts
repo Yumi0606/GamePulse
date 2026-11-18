@@ -26,7 +26,7 @@ export interface DevHost {
 /**
  * 开发形态：把 Vite 以 middlewareMode 挂进同一个 Fastify 实例。
  *
- * 单端口硬约束：3000 同时提供 `/app`（前端）与 `/api/v1`（数据），
+ * 单端口硬约束：3000 同时提供前端页面与 `/api/v1`（数据），
  * 不另起 5173。Vite 从 apps/web 解析（依赖声明在 @gamepulse/web），
  * 服务端包不重复声明前端依赖。
  */
@@ -62,7 +62,7 @@ export async function attachViteDev(app: DevHost): Promise<void> {
         }
         return;
       }
-      // Vite 未接管（既不是 HTML 也不是静态资源）：直接 404，不落旧展示层
+      // Vite 未接管（既不是 HTML 也不是静态资源）：直接 404，不落其它处理器
       if (!reply.raw.headersSent) {
         reply.raw.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
         reply.raw.end('Not Found');
@@ -70,8 +70,8 @@ export async function attachViteDev(app: DevHost): Promise<void> {
     });
   };
 
-  app.get('/app', handler);
-  app.get('/app/*', handler);
+  app.get('/', handler);
+  app.get('/*', handler);
 
-  log.info('Vite 开发中间件已挂载 root=%s base=/app/', webRoot);
+  log.info('Vite 开发中间件已挂载 root=%s base=/', webRoot);
 }

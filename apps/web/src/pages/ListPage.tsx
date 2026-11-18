@@ -15,7 +15,7 @@ import { FilterField, FilterGrid, FilterPanel, controlClass } from '../component
  * 筛选与分页以 URL query 为唯一真源（刷新、分享、前进后退都保持一致）；
  * 状态筛选的映射只在展示层做：「进行中」直传服务端，旧链接的 active 兼容为 ongoing。
  * 生命周期默认只显示已确定的三类，未判定需要主动筛选查看。
- * 原始动态已拆到 /app/posts，这里只保留活动，避免两类内容互相挤占。
+ * 原始动态已拆到 /posts，这里只保留活动，避免两类内容互相挤占。
  */
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZES = [20, 50, 100];

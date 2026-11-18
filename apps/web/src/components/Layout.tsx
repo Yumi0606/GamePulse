@@ -66,9 +66,6 @@ export function Layout() {
           <span>GamePulse · 数据来自各游戏官方社媒</span>
           <Link to="/health">源健康</Link>
           <Link to="/posts">原始动态</Link>
-          <a href="/" title="旧版列表页（重构过渡期保留）">
-            旧版
-          </a>
         </div>
       </footer>
     </div>

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "GamePulse 数据验收前端（React + Tailwind），由 Fastify 单端口在 /app 提供",
+  "description": "GamePulse 数据验收前端（React + Tailwind），由 Fastify 单端口在根路径提供",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -25,31 +25,34 @@ description: 构建并部署 GamePulse 到腾讯云生产环境 gp.yumi0606.top�
 ### 1. 确认更新范围
 
 - `git status --short` 与近期提交，判断是否有新增依赖（看 package.json diff）。
-- 确认是否新增非 ts 静态资源：tsc 只编译 .ts，资源文件必须靠 `apps/server/src` 一起上传（日历资源运行时从 `apps/server/src/web/assets/` 读取）。
+- 确认是否新增非 ts 静态资源：tsc 只编译 .ts，前端静态资源由 `apps/web/dist` 提供，服务端已无独立资源目录。
 
 ### 2. 本地构建并打包
 
 ```powershell
 pnpm build
-# 构建产物：apps/server/dist、apps/web/dist、packages/shared/dist；源码含 assets 等非 ts 资源
+# 构建产物：apps/server/dist、apps/web/dist、packages/shared/dist
 tar -czf "$env:TEMP\gamepulse-dist.tar.gz" apps/server/dist apps/server/src apps/server/package.json apps/server/tsconfig.json apps/web/dist apps/web/package.json apps/web/vite.config.ts packages/shared/dist packages/shared/src packages/shared/package.json packages/shared/tsconfig.json package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json
 ```
 
-`pnpm build`（workspace 递归构建，失败即停止）是第一道兜底，失败不上传。前端改动必须带 `apps/web/dist`，否则 nginx 托管的 `/app` 仍是旧产物。
+`pnpm build`（workspace 递归构建，失败即停止）是第一道兜底，失败不上传。前端改动必须带 `apps/web/dist`，否则 nginx 在根路径托管的仍是旧产物。
 
-### 2.1 nginx 首次托管新前端（只做一次）
+### 2.1 nginx 托管前端（根路径）
 
-`/app` 需要独立 location，不能落到 3100 的旧展示层：
+前端直接挂在根路径，不能再落到 3100 的 Fastify：
 
 ```nginx
-location /app/ {
-    alias /opt/gamepulse/apps/web/dist/;
-    try_files $uri $uri/ /app/index.html;
+root /opt/gamepulse/apps/web/dist;
+index index.html;
+
+location / {
+    try_files $uri $uri/ /index.html;
 }
-location = /app { return 301 /app/; }
+location /api/ { proxy_pass http://127.0.0.1:3100; }
+location /rss/ { proxy_pass http://127.0.0.1:3100; }
 ```
 
-改完 `nginx -t && nginx -s reload`。`/`、`/calendar`、`/week`、`/health`、`/rss/*` 仍反代 3100，旧页与新前端互链。
+改完 `nginx -t && nginx -s reload`。除 `/api/*` 与 `/rss/*` 外，全部路径由前端 SPA 接管。
 
 ### 3. 上传并在服务器解压
 
@@ -84,13 +87,14 @@ ssh tencent 'systemctl restart gamepulse-web; sleep 8; systemctl is-active gamep
 
 ```powershell
 ssh tencent 'curl -s -o /dev/null -w "home:%{http_code}\n" https://gp.yumi0606.top/;
-curl -s -o /dev/null -w "app:%{http_code}\n" https://gp.yumi0606.top/app/;
+curl -s -o /dev/null -w "all:%{http_code}\n" https://gp.yumi0606.top/all;
 curl -s -o /dev/null -w "calendar:%{http_code}\n" https://gp.yumi0606.top/calendar;
+curl -s -o /dev/null -w "rss:%{http_code}\n" https://gp.yumi0606.top/rss/entries;
 curl -s https://gp.yumi0606.top/api/v1/health;
 tail -5 /opt/gamepulse/logs/app.log'
 ```
 
-- 首页、`/app/`、日历、（如改动涉及）静态资源 `/assets/*`、RSS 路径均返回 200；`/api/v1/health` 返回 JSON 且 `scan.enabled=true`（只读模式下为 false）。
+- 首页、`/all`、`/calendar`、RSS 路径均返回 200；`/api/v1/health` 返回 JSON 且 `scan.enabled=true`（只读模式下为 false）。
 - 落盘日志中调度器首轮同步正常：无 ERROR，拉取/OCR/LLM 各阶段符合预期。
 - 改动涉及前端页面时，可用浏览器打开 https://gp.yumi0606.top 目检。
 
