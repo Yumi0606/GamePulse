@@ -9,7 +9,7 @@
  *
  * 说明：
  *   --context  打印完整喂给 LLM 的上下文（仅单条时有效）。
- *   --system   打印送入 LLM 的 system prompt（含召回候选表），审计召回与匹配用。
+ *   --system   打印送入 LLM 的静态 system prompt（候选表在 user 消息里，用 --context 查看）。
  *   --raw      打印 LLM 原始 JSON 输出，审计规整前的 matchedEntryId / canonicalName。
  *   --save     结果入库（默认 dry-run，不消耗幂等状态）。
  * 需先 pnpm build，并在 .env 配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL。
@@ -34,7 +34,7 @@ const gameId = flag('game');
 const titleLike = flag('title');
 const save = has('save');
 const showContext = has('context');
-/** 审计用：打印送入 LLM 的 system prompt（含候选表）与原始 JSON 输出 */
+/** 审计用：打印送入 LLM 的静态 system prompt 与原始 JSON 输出 */
 const showSystem = has('system');
 const showRaw = has('raw');
 

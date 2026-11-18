@@ -31,28 +31,14 @@ const INFRA_BREAK_STREAK = 3;
 /** 产出源标识（写入 entries.source） */
 const SOURCE = 'llm-bilibili';
 
-/** 系统提示：任务定义 + 数据模型 + 时间解析规则 + 输出格式（字段与《调研报告-活动数据结构》§4 对齐） */
-function systemPrompt(
-  gameId: string,
-  gameName: string,
-  publishedAt: string,
-  today: string,
-  candidates: RecallCandidate[],
-): string {
-  const rule = gameRuleFor(gameId);
-  const categoryBlock = rule
-    ? Object.entries(rule.categories)
-      .map(([type, cats]) => `  - ${type}：${(cats ?? []).join(' / ')}`)
-      .join('\n')
-    : '';
-  const gameRule = rule
-    ? `${rule.prompt}\n\n### 本游戏 category 词表（只能选其中值，无合适值选"其他"）\n${categoryBlock}`
-    : '';
-  return `你是游戏运营信息结构化助手。任务：把游戏官方社媒动态解析为结构化的排期条目。
+/**
+ * 系统提示：任务定义 + 数据模型 + 时间解析规则 + 输出格式（字段与《调研报告-活动数据结构》§4 对齐）。
+ * 必须保持纯静态：任何按动态变化的内容（游戏、日期、候选表、正文）都放 user 消息。
+ * DeepSeek 的上下文缓存按请求前缀完整匹配，system 一旦插入变量，后续全部规则都无法命中。
+ */
+const SYSTEM_PROMPT = `你是游戏运营信息结构化助手。任务：把游戏官方社媒动态解析为结构化的排期条目。
 
-目标游戏：${gameName}
-动态发布时间：${publishedAt}（作为"今天/X天后/本周五"等相对表述的参照）
-当前日期：${today}
+目标游戏、动态发布时间、当前日期与该游戏专属规则由用户消息给出。
 动态中的时间均为游戏服务器时间（国服=北京时间 UTC+8），无需时区换算。
 
 ## 条目大类（type 只能取以下值）
@@ -92,10 +78,11 @@ function systemPrompt(
      若官方专名本身包含「版本」等字样（如「丹青渡」版本活动），按官方名称整体保留，不要额外叠加其他前缀。
    - 必须包含区分不同实例的要素：有官方期数/阶段的含期数（如"第一期""第二段"）；周期性同名条目（常驻寻访、周更商店）含当期核心对象（UP 角色/商品名）；都没有时才追加日期区分。
    - 例：多条"特许寻访「烟火邀星河」（明河）"报道 → 统一 "特许寻访·烟火邀星河（明河）"；汉堡王联动的 PV 与详情帖 → 统一 "汉堡王联动·美味通行堡已就位"。
-7. matchedEntryId（跨动态去重，仅当本游戏已有条目时可填）：下面候选表列出了本游戏历史条目的专名（已去掉模板词）、规范名与时间。
+7. matchedEntryId（跨动态去重，仅当本游戏已有条目时可填）：用户消息中的候选表每行是一个已归组的历史活动，列出 id、type、专名（已去掉模板词）、canonicalName、标题与起止时间。
    - **新建条目前必须先逐行比对「专名」列**：把你得到的活动专名去模板词后，与候选表每一行做完全相等比对；命中就必须复用该行的 id 与 canonicalName，不得新建。
-   - 同一活动被另一条动态报道过，或本条动态是对同一活动的补充说明 → 必须填 "matchedEntryId": 候选表「同组全部 id」中的任意一个（通常取第一个），并原样复制该行 canonicalName。
-   - **同组全部 id 是同一活动的历史残留，不是多个活动**：不要为它们分别建条目，也不要因为组内 id 多就视为不同活动。
+   - 同一活动被另一条动态报道过，或本条动态是对同一活动的补充说明 → 必须填 "matchedEntryId": 候选表该行的 id，并原样复制该行 canonicalName。
+   - 候选表的 canonicalName 列取值为 "=" 时表示与专名相同；标题列取值为 "—" 时表示与 canonicalName 相同。
+   - 一行代表一个活动；同一活动的历史重复条目已合并到同一行，不会以多行出现。
    - 前缀/后缀/措辞差异不影响判断：专名相同即 same-event，例如"烟火生缘"与"「丹青渡」全新活动「烟火生缘」"是同一个活动。
    - 只是名称相似但实际是不同活动（不同赛季、不同批次、不同期数）→ 不要填。
    - 只能匹配 type 相同的候选。
@@ -106,10 +93,6 @@ function systemPrompt(
    - "permanent"：没有结束节点、长期存在（常驻玩法、常驻卡池、常驻商店、常驻兑换）。
    - "event"：某日生效的一次性内容更新（商店更新、兑换新增、版本内容拓展、奖励进度轮换），本身没有持续期，也没有结束概念。
    - ANNOUNCEMENT 不填；拿不准就省略，不能因为"原文没写结束时间"就选 permanent。
-
-${candidateBlock(candidates)}
-
-${gameRule}
 
 ## 输出格式（严格 JSON，不要输出任何其他文字；除 type/slot/title/canonicalName/confidence/evidence 外均可省略）
 {
@@ -140,10 +123,25 @@ ${gameRule}
     }
   ]
 }`;
+
+/**
+ * 游戏专属规则块：同一游戏的每条动态拼入同一段文本，放在 user 消息开头。
+ * 这样「静态 system + 游戏规则」构成按游戏稳定的前缀，同游戏连续请求可命中缓存。
+ */
+function gameRuleBlock(gameId: string): string {
+  const rule = gameRuleFor(gameId);
+  if (!rule) return '';
+  const categoryBlock = Object.entries(rule.categories)
+    .map(([type, cats]) => `  - ${type}：${(cats ?? []).join(' / ')}`)
+    .join('\n');
+  return `## 本游戏专属规则\n${rule.prompt}\n\n### 本游戏 category 词表（只能选其中值，无合适值选"其他"）\n${categoryBlock}`;
 }
 
 /**
  * 候选表文本：把召回结果渲染为紧凑的 Markdown 表格。
+ * 每行代表一个已归组的活动，只输出组内最早条目 id——归组已保证同活动只有一个 id 可用，
+ * 完整 id 列表对模型没有信息增量，却按候选数量成倍放大输入 token。
+ * `=` 表示与专名相同，`—` 表示与 canonicalName 相同，避免重复长文本。
  * 无候选时返回说明行，明确告知 LLM 本次没有可复用条目。
  */
 function candidateBlock(candidates: RecallCandidate[]): string {
@@ -152,13 +150,16 @@ function candidateBlock(candidates: RecallCandidate[]): string {
   }
   const fmt = (unix: number | undefined): string =>
     unix === undefined ? '—' : fmtCst(unix).slice(0, 10);
-  const rows = candidates.map((c) =>
-    `| ${c.entryId} | ${c.type} | ${c.eventKey || c.canonicalName} | ${c.canonicalName} | ${c.entryIds.join(',')} | ${c.title} | ${fmt(c.startAt)} | ${fmt(c.endAt)} |`,
-  );
+  const rows = candidates.map((c) => {
+    const name = c.eventKey || c.canonicalName;
+    const canonical = c.canonicalName === name ? '=' : c.canonicalName;
+    const title = c.title === c.canonicalName ? '—' : c.title;
+    return `| ${c.entryId} | ${c.type} | ${name} | ${canonical} | ${title} | ${fmt(c.startAt)} | ${fmt(c.endAt)} |`;
+  });
   return [
-    '## 本游戏历史条目候选（判定为同一活动时必须复用其 id 与 canonicalName）',
-    '| id | type | 专名（去模板词） | canonicalName | 同组全部 id | 标题 | 开始 | 结束 |',
-    '|---|---|---|---|---|---|---|---|',
+    '## 本游戏历史条目候选（每行一个已归组活动；判定为同一活动时必须复用其 id 与 canonicalName）',
+    '| id | type | 专名（去模板词） | canonicalName | 标题 | 开始 | 结束 |',
+    '|---|---|---|---|---|---|---|',
     ...rows,
   ].join('\n');
 }
@@ -435,14 +436,28 @@ function normalizeEntry(
   };
 }
 
-/** 组装送 LLM 的用户消息（正文 + 各图 OCR 文本）；返回 null 表示无有效文本，跳过 */
-async function buildUserContent(post: StoredPost, gameName: string): Promise<string | null> {
-  const ocrTexts = await loadOcrTexts(post.id);
-  const parts: string[] = [];
-  if (post.description?.trim()) parts.push(`【动态正文】\n${post.description.trim()}`);
-  ocrTexts.forEach((t, i) => parts.push(`【图片${i + 1} OCR 文本】\n${t.trim()}`));
-  if (parts.length === 0) return null;
-  return `游戏：${gameName}\n动态标题：${post.title}\n发布时间：${fmtCst(post.publishedAt)}（北京时间）\n\n${parts.join('\n\n')}`;
+/**
+ * 组装送 LLM 的用户消息。
+ * 顺序按变化频率从低到高：游戏与专属规则（同游戏稳定）→ 日期（同日稳定）→ 候选表与正文（每条不同）。
+ * 这样系统提示与游戏规则构成可缓存前缀，而不是每条动态都从第一行开始失效。
+ */
+function buildUserContent(
+  post: StoredPost,
+  gameName: string,
+  today: string,
+  candidates: RecallCandidate[],
+  parts: string[],
+): string {
+  const sections = [
+    `目标游戏：${gameName}`,
+    gameRuleBlock(post.gameId),
+    `动态发布时间：${fmtCst(post.publishedAt)}（北京时间，作为"今天/X天后/本周五"等相对表述的参照）`,
+    `当前日期：${today}`,
+    candidateBlock(candidates),
+    `动态标题：${post.title}`,
+    parts.join('\n\n'),
+  ];
+  return sections.filter((s) => s !== '').join('\n\n');
 }
 
 /**
@@ -460,13 +475,18 @@ async function processPost(
   entries: Entry[];
   user: string | null;
   infra?: boolean;
-  /** 送入 LLM 的 system prompt（含候选表），仅用于探针审计 */
+  /** 送入 LLM 的静态 system prompt，仅用于探针审计 */
   system?: string;
   /** LLM 原始 JSON 输出，仅用于探针审计 */
   raw?: unknown;
 }> {
-  const user = await buildUserContent(post, gameNames[post.gameId] ?? post.gameId);
-  if (!user) {
+  // 先取 OCR 文本：正文与 OCR 都为空时无从结构化，直接跳过，不消耗 LLM
+  const ocrTexts = await loadOcrTexts(post.id);
+  const parts: string[] = [];
+  if (post.description?.trim()) parts.push(`【动态正文】\n${post.description.trim()}`);
+  ocrTexts.forEach((t, i) => parts.push(`【图片${i + 1} OCR 文本】\n${t.trim()}`));
+  let user: string | null = null;
+  if (parts.length === 0) {
     // 正文与 OCR 均为空，无从结构化：清空该动态的旧条目再标记已处理，
     // 保证 entry_count=0 与 entries 表实际内容一致（否则旧条目残留、计数却归零）
     if (save) {
@@ -479,19 +499,24 @@ async function processPost(
   // 词表无法覆盖所有游戏的用词，硬过滤会让含活动的动态被永久标记为已处理。
   try {
     // 召回本游戏历史条目作为候选：LLM 若判定为同一活动，复用候选 id 完成跨动态合并
-    // 召回查询文本仍取标题 + 正文 + OCR，名称命中兜底依赖它
-    const recallText = `${post.title}\n${user}`;
+    // 召回查询文本取标题 + 正文 + OCR，名称命中兜底依赖它
+    const recallText = `${post.title}\n${post.description ?? ''}\n${ocrTexts.join('\n')}`;
     const candidates = await recallCandidates(post.gameId, recallText);
     const candidateIndex = new Map(candidates.flatMap((c) => c.entryIds.map((id) => [id, c] as const)));
     // eventKey 索引：LLM 未填 matchedEntryId 时的确定性兜底，只做完全相等匹配
     const keyIndex = new Map(candidates.map((c) => [`${c.type}\u0000${c.eventKey}`, c] as const));
     // 发布时间与当前日期均给北京时间，避免"X天后/本周五"相对推算被 UTC 口径带偏
-    const system = systemPrompt(
-      post.gameId,
+    const system = SYSTEM_PROMPT;
+    user = buildUserContent(
+      post,
       gameNames[post.gameId] ?? post.gameId,
-      fmtCst(post.publishedAt),
       CST_D.format(Date.now()),
       candidates,
+      parts,
+    );
+    log.debug(
+      'prompt systemChars=%d userChars=%d candidates=%d',
+      system.length, user.length, candidates.length,
     );
     const out = (await chatJSON({ system, user })) as { items?: RawEntry[] };
 
@@ -591,7 +616,7 @@ export async function extractOnePost(
   status: 'not_found' | 'llm_disabled' | 'processed' | 'skipped' | 'failed';
   user: string | null;
   entries: Entry[];
-  /** 送入 LLM 的 system prompt（含候选表），仅用于探针审计 */
+  /** 送入 LLM 的静态 system prompt，仅用于探针审计 */
   system?: string;
   /** LLM 原始 JSON 输出，仅用于探针审计 */
   raw?: unknown;
