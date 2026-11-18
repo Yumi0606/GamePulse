@@ -101,6 +101,11 @@ function systemPrompt(
    - 只能匹配 type 相同的候选。
    - 同时填 "matchReason"，取值 reused-name（命名一致）| same-event（同一场活动）| same-reward（同一奖励/同一商品）。
    - 确定是新活动时不填这两个字段。
+8. lifecycle（生命周期，可省略；只回答"会不会到期"，与当前处于哪个时间状态无关）：
+   - "limited"：有预设结束节点（限时活动、限时卡池、限时兑换、限时签到），结束时间或结束引用出现时必须选它。
+   - "permanent"：没有结束节点、长期存在（常驻玩法、常驻卡池、常驻商店、常驻兑换）。
+   - "event"：某日生效的一次性内容更新（商店更新、兑换新增、版本内容拓展、奖励进度轮换），本身没有持续期，也没有结束概念。
+   - ANNOUNCEMENT 不填；拿不准就省略，不能因为"原文没写结束时间"就选 permanent。
 
 ${candidateBlock(candidates)}
 
@@ -122,6 +127,7 @@ ${gameRule}
       "endAt": "YYYY-MM-DDTHH:mm 或 YYYY-MM-DD",
       "startRef": "纯日期时的原文表述；或无法锚定时的开始时间原文",
       "endRef": "纯日期时的原文表述；或无法锚定时的结束时间原文",
+      "lifecycle": "limited | permanent | event（可省略，见规则 8）",
       "rewardEndAt": "YYYY-MM-DDTHH:mm 或 YYYY-MM-DD",
       "phases": [{"title": "段名（原文有就用原文）", "startAt": "YYYY-MM-DDTHH:mm", "endAt": "YYYY-MM-DDTHH:mm", "estimated": false}],
       "bannerImageIndex": 1,
@@ -171,6 +177,8 @@ interface RawEntry {
   endAt?: string;
   startRef?: string;
   endRef?: string;
+  /** 生命周期；可省略，代码侧校验并兜底（见 resolveLifecycle） */
+  lifecycle?: string;
   rewardEndAt?: string;
   phases?: { title?: string; startAt?: string; endAt?: string; startRef?: string; endRef?: string; estimated?: boolean }[];
   bannerImageIndex?: number;
@@ -241,6 +249,52 @@ function hash36(s: string): string {
   return (h >>> 0).toString(36);
 }
 
+/** 生命周期白名单（与 shared ENTRY_LIFECYCLES 一致） */
+const VALID_LIFECYCLES = ['limited', 'permanent', 'event'] as const;
+/** 标题/分类里的显式常驻标记 */
+const LIFECYCLE_PERMANENT_RE = /常驻/;
+/**
+ * 标题里明确写「限时」才据此判 limited。分类由 LLM 生成，
+ * 出现过「全新模式上线」被判为「限时玩法」的错例，不能单独作为依据。
+ */
+const LIFECYCLE_LIMITED_RE = /限时/;/** 一次性内容更新的用词：含「常驻…更新」时按更新处理（SPEC §6.3 的例子） */
+const LIFECYCLE_EVENT_RE = /更新|拓展|修复|新增|记录|轮换|上新/;
+
+/**
+ * 生命周期校验与兜底（顺序即优先级，见 SPEC §6.2 与 §6.3 的正反例）：
+ * 1. 公告不适用 → 空；
+ * 2. 有绝对结束时间 → 强制 limited；
+ * 3. 有结束引用（含未锚定）→ 不得 permanent，按 limited；
+ * 4. 标题或分类明确写「限时」→ limited（结束时间未知，进首页「时间未定」）；
+ * 5. 标题或分类含更新类用词 → event。优先于「常驻」，
+ *    否则「常驻【标准寻访】更新」「常驻模式奖励轮换」会被误判成永久条目；
+ * 6. 标题或分类明确写「常驻」→ permanent；
+ * 7. LLM 已给出合法值 → 采用；
+ * 8. 仍无依据 → 空（未判定，不得猜成常驻）。
+ */
+function resolveLifecycle(
+  type: string,
+  rawLifecycle: string | undefined,
+  title: string,
+  category: string | undefined,
+  endAt: number | undefined,
+  endRef: string | undefined,
+): Entry['lifecycle'] {
+  // 优先级：结构化事实 > 用户确认的措辞口径 > LLM 判定 > 标题关键词兜底。
+  // LLM 看过正文与 OCR 全文，其判断强于在它自己生成的标题上做正则；
+  // 但结束时间和「限时」「常驻+更新」这类明确措辞不交给模型碰运气。
+  if (type === 'ANNOUNCEMENT') return undefined;
+  if (endAt !== undefined || endRef?.trim()) return 'limited';
+  if (LIFECYCLE_LIMITED_RE.test(title)) return 'limited';
+  if (LIFECYCLE_PERMANENT_RE.test(title) && LIFECYCLE_EVENT_RE.test(title)) return 'event';
+  const llm = VALID_LIFECYCLES.find((v) => v === rawLifecycle?.trim());
+  if (llm) return llm;
+  const text = `${title}\n${category ?? ''}`;
+  if (LIFECYCLE_EVENT_RE.test(text)) return 'event';
+  if (LIFECYCLE_PERMANENT_RE.test(text)) return 'permanent';
+  return undefined;
+}
+
 /** 校验并规整一条 LLM 输出 → Entry；不合法返回 null（宁缺毋滥） */
 function normalizeEntry(
   post: StoredPost,
@@ -295,6 +349,8 @@ function normalizeEntry(
   const rewardEndAt = reward?.unix;
   // 无任何时间信息且无引用型时间的条目无排期价值
   if (startAt === undefined && endAt === undefined && !raw.startRef && !raw.endRef) return null;
+
+  const lifecycle = resolveLifecycle(type, raw.lifecycle, title, category, endAt, raw.endRef);
 
   // banner：LLM 指定第几张动态图（1-based）为主视觉
   const bannerIdx = raw.bannerImageIndex;
@@ -374,6 +430,7 @@ function normalizeEntry(
     publishedAt: post.publishedAt,
     startAt,
     endAt,
+    lifecycle,
     payload,
   };
 }

@@ -13,19 +13,29 @@ import { FilterField, FilterGrid, FilterPanel, controlClass } from '../component
  * 全部活动（归档列表）。
  *
  * 筛选与分页以 URL query 为唯一真源（刷新、分享、前进后退都保持一致）；
- * 状态筛选的映射只在展示层做：active 展开成服务端认识的三个状态值。
+ * 状态筛选的映射只在展示层做：「进行中」直传服务端，旧链接的 active 兼容为 ongoing。
+ * 生命周期默认只显示已确定的三类，未判定需要主动筛选查看。
  * 原始动态已拆到 /app/posts，这里只保留活动，避免两类内容互相挤占。
  */
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZES = [20, 50, 100];
 
 const STATUS_OPTIONS = [
-  { value: 'active', label: '未结束的活动' },
+  { value: 'ongoing', label: '进行中（默认）' },
   { value: 'all', label: '全部状态' },
-  { value: 'ongoing', label: '进行中' },
   { value: 'not-started', label: '未开始' },
   { value: 'ended', label: '已结束' },
   { value: 'unknown', label: '时间未知' },
+];
+
+/** 生命周期筛选：determined 展开为三个已确定取值，unjudged 单独查看 */
+const LIFECYCLE_OPTIONS = [
+  { value: 'determined', label: '已确定（默认）' },
+  { value: 'all', label: '全部生命周期' },
+  { value: 'limited', label: '限时' },
+  { value: 'permanent', label: '常驻' },
+  { value: 'event', label: '更新' },
+  { value: 'unjudged', label: '未判定' },
 ];
 
 export function ListPage() {
@@ -53,7 +63,8 @@ export function ListPage() {
   const gameId = str('gameId');
   const type = str('type');
   const keyword = str('q');
-  const statusParam = str('status', 'active');
+  const statusParam = str('status', 'ongoing');
+  const lifecycleParam = str('lifecycle', 'determined');
   const sort = str('sort', 'end');
   const order = str('order', 'asc');
   const fromDate = str('from');
@@ -82,23 +93,33 @@ export function ListPage() {
 
   const status = entryId
     ? undefined
-    : statusParam === 'active'
-      ? 'not-started,ongoing,unknown'
-      : statusParam === 'all'
-        ? undefined
+    : statusParam === 'all'
+      ? undefined
+      : statusParam === 'active'
+        ? 'ongoing'
         : statusParam;
+
+  // 深链定位单条时忽略生命周期筛选，避免目标条目被默认口径隐藏
+  const lifecycle = entryId
+    ? undefined
+    : lifecycleParam === 'all'
+      ? undefined
+      : lifecycleParam === 'determined'
+        ? 'limited,permanent,event'
+        : lifecycleParam;
 
   const from = cstDateStart(fromDate);
   const to = cstDateEnd(toDate);
   const now = Math.floor(Date.now() / 1000);
 
   const entriesQuery = useQuery({
-    queryKey: ['entries', { gameId, type, status, keyword, from, to, sort, order, page, pageSize, entryId }],
+    queryKey: ['entries', { gameId, type, status, lifecycle, keyword, from, to, sort, order, page, pageSize, entryId }],
     queryFn: () =>
       api.entries({
         gameId,
         type,
         status,
+        lifecycle,
         id: entryId,
         q: keyword,
         from,
@@ -133,10 +154,16 @@ export function ListPage() {
     [sourcePostsQuery.data],
   );
 
-  const hasFilter = Boolean(gameId || type || keyword || fromDate || toDate || entryId || params.get('status') || params.get('sort'));
+  const hasFilter = Boolean(
+    gameId || type || keyword || fromDate || toDate || entryId ||
+    (params.get('status') && statusParam !== 'ongoing') ||
+    (params.get('lifecycle') && lifecycleParam !== 'determined') ||
+    params.get('sort'),
+  );
   // 收起的次级筛选里生效的项数，供「更多筛选」提示
   const advancedCount =
-    (statusParam !== 'active' ? 1 : 0) +
+    (statusParam !== 'ongoing' && statusParam !== 'active' ? 1 : 0) +
+    (lifecycleParam !== 'determined' ? 1 : 0) +
     (fromDate ? 1 : 0) +
     (toDate ? 1 : 0) +
     (sort !== 'end' ? 1 : 0) +
@@ -211,9 +238,23 @@ export function ListPage() {
                 className={controlClass}
                 aria-label="状态"
                 value={statusParam}
-                onChange={(e) => patch({ status: e.target.value === 'active' ? null : e.target.value })}
+                onChange={(e) => patch({ status: e.target.value === 'ongoing' ? null : e.target.value })}
               >
                 {STATUS_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="生命周期" className="col-span-2 sm:col-span-1">
+              <select
+                className={controlClass}
+                aria-label="生命周期"
+                value={lifecycleParam}
+                onChange={(e) => patch({ lifecycle: e.target.value === 'determined' ? null : e.target.value })}
+              >
+                {LIFECYCLE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
                   </option>

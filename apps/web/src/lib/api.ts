@@ -47,6 +47,8 @@ export interface EntryQuery {
   gameId?: string;
   type?: string;
   status?: string;
+  /** 逗号分隔的生命周期：limited / permanent / event / unjudged */
+  lifecycle?: string;
   /** 按条目 id 取单条（深链定位） */
   id?: string;
   q?: string;

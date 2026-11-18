@@ -21,6 +21,8 @@ import { FilterField, FilterGrid, FilterPanel, controlClass } from '../component
  *
  * 取数按可见月份向服务端请求区间重叠的条目，不再拉全量；
  * 无开始时间的条目单独查一次，与月份无关。
+ * 只展示限时与一次性更新（lifecycle），常驻、未判定和公告不进日历；
+ * 更新按单日节点渲染，结束时间未知的限时活动用虚线底边并标注。
  */
 const DAY = 86400;
 const MAX_PER_CELL = 3;
@@ -47,6 +49,8 @@ interface Span {
   tip: string;
   gameId: string;
   entryId: string;
+  /** 结束时间未知：持续条延伸到月末，用虚线与文字标注 */
+  openEnd?: boolean;
 }
 
 interface Segment {
@@ -61,6 +65,8 @@ interface Segment {
   /** 本周内可见的起止端，用于画条端标记 */
   startMark: boolean;
   endMark: boolean;
+  /** 结束时间未知：条末不再画结束三角，改用虚线底边与文字说明 */
+  openEnd?: boolean;
 }
 
 const POINT_STYLE: Record<PointClass, string> = {
@@ -131,21 +137,33 @@ export function CalendarPage() {
   const entriesQuery = useQuery({
     queryKey: ['entries-calendar', { gameId, type, from: monthRange.start, to: monthRange.end }],
     queryFn: () =>
-      api.entries({ gameId, type, from: monthRange.start, to: monthRange.end, sort: 'start', limit: 500 }),
+      api.entries({
+        gameId,
+        type,
+        from: monthRange.start,
+        to: monthRange.end,
+        lifecycle: 'limited,event',
+        sort: 'start',
+        limit: 500,
+      }),
     placeholderData: keepPreviousData,
   });
 
   const unanchoredQuery = useQuery({
     queryKey: ['entries-unanchored', { gameId, type }],
-    queryFn: () => api.entries({ gameId, type, status: 'unknown', limit: 100 }),
+    queryFn: () =>
+      api.entries({ gameId, type, status: 'unknown', lifecycle: 'limited,event', limit: 100 }),
     placeholderData: keepPreviousData,
   });
 
-  const entries = entriesQuery.data?.items ?? [];
+  // 服务端已按 lifecycle 过滤，这里再兜一层：日历只认限时与一次性更新
+  const entries = (entriesQuery.data?.items ?? []).filter(
+    (e) => e.lifecycle === 'limited' || e.lifecycle === 'event',
+  );
   const model = useMemo(() => buildMonthModel(entries, month), [entries, month]);
   // status=unknown 覆盖「缺开始时间」，这里只保留起止皆空的条目，避免与网格里的结束点重复
   const unanchored = (unanchoredQuery.data?.items ?? []).filter(
-    (e) => e.startAt === undefined && e.endAt === undefined,
+    (e) => (e.lifecycle === 'limited' || e.lifecycle === 'event') && e.startAt === undefined && e.endAt === undefined,
   );
   const unanchoredPageCount = Math.max(1, Math.ceil(unanchored.length / UNANCHORED_PAGE));
   const unanchoredCurrent = Math.min(unanchoredPage, unanchoredPageCount);
@@ -230,6 +248,10 @@ export function CalendarPage() {
               <span className="ml-auto h-0 w-0 border-y-[3px] border-y-transparent border-l-[5px] border-l-ink-soft" />
             </span>
             跨天持续（左圆点 = 开始，右三角 = 结束）
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span aria-hidden className="h-2.5 w-9 rounded-sm border-b border-dashed border-ink-soft bg-neutral-weak" />
+            虚线底边 = 结束未知
           </span>
         </div>
 
@@ -316,6 +338,8 @@ export function CalendarPage() {
                         background: theme.bg,
                         color: theme.fg,
                         borderLeft: `3px solid ${theme.accent}`,
+                        // 结束未知：虚线底边作为颜色之外的第二重编码
+                        borderBottom: seg.openEnd ? '1px dashed currentColor' : undefined,
                       }}
                       title={seg.tip}
                     >
@@ -478,11 +502,18 @@ function buildMonthModel(
   const spans: Span[] = [];
 
   for (const e of entries) {
+    if (e.lifecycle !== 'limited' && e.lifecycle !== 'event') continue;
     const estTip = e.estimated ? '（预估）' : '';
     const si = e.startAt !== undefined ? dayIndexOf(e.startAt) : undefined;
     const ei = e.endAt !== undefined ? dayIndexOf(e.endAt) : undefined;
 
-    if (si !== undefined && ei !== undefined && ei > si) {
+    if (e.lifecycle === 'event') {
+      // 一次性内容更新只占单日节点，不拉成持续条
+      const di = si ?? ei;
+      if (di !== undefined && di >= 0 && di < days) {
+        buckets[di].push({ cls: 'single', text: e.title, tip: `更新：${e.title}${estTip}`, entryId: e.id });
+      }
+    } else if (si !== undefined && ei !== undefined && ei > si) {
       // 跨天活动只保留持续条，起止日不再进当日列表
       if (ei >= 0 && si <= days - 1) {
         spans.push({
@@ -496,16 +527,25 @@ function buildMonthModel(
           entryId: e.id,
         });
       }
-    } else if (si !== undefined) {
-      // 单日活动，或只有开始时间
-      if (si >= 0 && si < days) {
-        const single = ei === si;
-        buckets[si].push({
-          cls: single ? 'single' : 'start',
-          text: e.title,
-          tip: `${single ? '活动' : '开始'}：${e.title}${estTip}`,
+    } else if (si !== undefined && ei === undefined) {
+      // 结束时间未知的限时活动：持续条延伸到窗口末尾，用虚线与文字标注
+      if (si <= days - 1) {
+        spans.push({
+          s: Math.max(si, 0),
+          e: days - 1,
+          contL: si < 0,
+          contR: true,
+          openEnd: true,
+          title: e.title,
+          tip: `持续：${e.title}${estTip}（${fmtBound(e.startAt, e.startTimeKnown)} → 结束未知）`,
+          gameId: e.gameId,
           entryId: e.id,
         });
+      }
+    } else if (si !== undefined) {
+      // 单日活动：起止同一天
+      if (si >= 0 && si < days) {
+        buckets[si].push({ cls: 'single', text: e.title, tip: `活动：${e.title}${estTip}`, entryId: e.id });
       }
     } else if (ei !== undefined && ei >= 0 && ei < days) {
       // 只有结束时间
@@ -539,17 +579,21 @@ function buildMonthModel(
       .map(({ sp, a, b }) => {
         const isFirst = a === sp.s;
         const isLast = b === sp.e;
+        const openEndText = isLast && sp.openEnd ? '（结束未知）' : '';
         return {
           colStart: a - weekStart,
           colspan: b - a + 1,
           lead: isFirst && sp.contL ? '‹ ' : '',
-          trail: isLast && sp.contR ? ' ›' : '',
+          trail: openEndText || (isLast && sp.contR ? ' ›' : ''),
           title: sp.title,
-          tip: `${sp.tip}${isFirst && sp.contL ? '（延续自上月）' : ''}${isLast && sp.contR ? '（延续至下月）' : ''}`,
+          tip: `${sp.tip}${isFirst && sp.contL ? '（延续自上月）' : ''}${
+            isLast && sp.contR && !sp.openEnd ? '（延续至下月）' : ''
+          }`,
           gameId: sp.gameId,
           entryId: sp.entryId,
           startMark: isFirst,
-          endMark: isLast,
+          endMark: isLast && !sp.openEnd,
+          openEnd: sp.openEnd,
         };
       });
 

@@ -1,4 +1,4 @@
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { cstDateEnd, cstDateStart } from '../lib/format';
@@ -57,6 +57,8 @@ export function PostsPage() {
   };
 
   const gameId = str('gameId');
+  /** 深链定位单条动态（首页来源入口）：此时忽略其余筛选，保证目标动态一定出现 */
+  const postId = str('id');
   const fromDate = str('from');
   const toDate = str('to');
   /** 图片数量闭区间：留空表示该端不限，非数字一律视为未填 */
@@ -81,22 +83,24 @@ export function PostsPage() {
   const postsQuery = useQuery({
     queryKey: [
       'posts',
-      { gameId, keyword, from, to, imagesMin, imagesMax, extracted, sort, order, page, pageSize },
+      { postId, gameId, keyword, from, to, imagesMin, imagesMax, extracted, sort, order, page, pageSize },
     ],
     queryFn: () =>
-      api.posts({
-        gameId,
-        q: keyword,
-        from,
-        to,
-        imagesMin,
-        imagesMax,
-        extracted: extracted === 'never' || extracted === 'empty' || extracted === 'some' ? extracted : undefined,
-        sort: sort === 'images' || sort === 'entries' ? sort : 'published',
-        order: order === 'asc' ? 'asc' : 'desc',
-        limit: pageSize,
-        offset: (page - 1) * pageSize,
-      }),
+      postId
+        ? api.posts({ id: postId, limit: 1 })
+        : api.posts({
+            gameId,
+            q: keyword,
+            from,
+            to,
+            imagesMin,
+            imagesMax,
+            extracted: extracted === 'never' || extracted === 'empty' || extracted === 'some' ? extracted : undefined,
+            sort: sort === 'images' || sort === 'entries' ? sort : 'published',
+            order: order === 'asc' ? 'asc' : 'desc',
+            limit: pageSize,
+            offset: (page - 1) * pageSize,
+          }),
     placeholderData: keepPreviousData,
   });
 
@@ -122,7 +126,7 @@ export function PostsPage() {
     (order !== 'desc' ? 1 : 0);
 
   // 分页器在列表上下各渲染一次，长列表翻页不必先滚到底
-  const pager = postsQuery.data ? (
+  const pager = postsQuery.data && !postId ? (
     <div className="flex justify-end">
       <Pagination
         page={page}
@@ -147,7 +151,20 @@ export function PostsPage() {
         </div>
       </Card>
 
-      <FilterPanel
+      {postId ? (
+        <Card>
+          <div className="flex flex-wrap items-baseline gap-2 text-[13px]">
+            <span>正在查看指定动态</span>
+            {postsQuery.data?.items[0] ? (
+              <span className="text-muted">{postsQuery.data.items[0].title}</span>
+            ) : null}
+            <Link className="ml-auto" to="/posts">
+              查看全部动态 →
+            </Link>
+          </div>
+        </Card>
+      ) : (
+        <FilterPanel
         primary={
           <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
             <FilterField label="关键词" hint="匹配动态标题与正文">
@@ -270,6 +287,7 @@ export function PostsPage() {
         resetEnabled={hasFilter}
         onReset={() => setParams(new URLSearchParams(), { replace: true })}
       />
+      )}
 
       {pager}
 

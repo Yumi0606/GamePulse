@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import type { Entry, EntryPayload, Item, MaintenanceWindow, TimeRef } from '../core/types.js';
-import type { EntrySort, EntryStatus } from '@gamepulse/shared';
+import type { EntryLifecycleFilter, EntrySort, EntryStatus } from '@gamepulse/shared';
 import { cstStartOfDay } from '@gamepulse/shared';
 import { eventKey, normalizeCanonicalName } from '../core/types.js';
 import { normalizeImageUrl } from '../core/imageUrl.js';
@@ -168,7 +168,8 @@ function openDb(): DatabaseSync {
       url           TEXT,               -- 官方/原文链接
       published_at  INTEGER,            -- 发布时间，Unix 秒（动态来源时继承 posts.published_at）
       start_at      INTEGER,            -- 开始时间（引用型时间锚定后的绝对值），Unix 秒；未锚定为 NULL
-      end_at        INTEGER,            -- 结束时间，Unix 秒；常驻/未锚定为 NULL（分段与奖励期细节在 payload.schedule）
+      end_at        INTEGER,            -- 结束时间，Unix 秒；无结束节点/未锚定为 NULL，语义由 lifecycle 区分
+      lifecycle     TEXT,               -- 生命周期：limited / permanent / event；NULL=未判定或公告不适用（见 SPEC §6）
       payload       TEXT NOT NULL,      -- 完整条目 JSON：schedule 分段、rewardEndAt、provenance、confidence、category、extra 等
       first_seen_at INTEGER NOT NULL,   -- 首次入库时间，Unix 秒
       updated_at    INTEGER NOT NULL    -- 内容最近一次变化时间，Unix 秒
@@ -222,6 +223,7 @@ function openDb(): DatabaseSync {
   migrateFromItemsTable(db);
   migrateOcrRecords(db);
   migratePostsExtract(db);
+  migrateEntriesLifecycle(db);
   return db;
 }
 
@@ -231,6 +233,17 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, ddl: stri
   if (cols.some((c) => c.name === column)) return false;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   return true;
+}
+
+/**
+ * 旧库 entries 生命周期迁移（幂等，可反复执行）：
+ * 先补 lifecycle 列，再建 (lifecycle, end_at) 索引。
+ * 顺序不可颠倒——索引依赖列存在，旧库缺列时直接建索引会失败。
+ */
+function migrateEntriesLifecycle(db: DatabaseSync): void {
+  const added = ensureColumn(db, 'entries', 'lifecycle', 'lifecycle TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_entries_lifecycle ON entries(lifecycle, end_at)');
+  if (added) log.info('entries 已补 lifecycle 列');
 }
 
 /**
@@ -590,6 +603,17 @@ export async function countUnresolvedEvents(): Promise<UnresolvedEventCount> {
   return { total: row.total, cookieSuspect: Number(row.cookie) };
 }
 
+/**
+ * 生命周期未判定条目数（数据质量指标）。
+ * 公告的生命周期不适用，不计入；见 SPEC §6.2 与 §10。
+ */
+export async function countUnjudgedLifecycle(): Promise<number> {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS n FROM entries WHERE lifecycle IS NULL AND type <> 'ANNOUNCEMENT'
+  `).get() as { n: number };
+  return Number(row.n);
+}
+
 /** events 表行 */
 interface EventRow {
   id: number;
@@ -699,6 +723,7 @@ interface EntryRow {
   published_at: number | null;
   start_at: number | null;
   end_at: number | null;
+  lifecycle: string | null;
   payload: string;
   first_seen_at: number;
   updated_at: number;
@@ -725,6 +750,7 @@ function rowToEntry(row: EntryRow): StoredEntry {
     publishedAt: row.published_at ?? undefined,
     startAt: row.start_at ?? undefined,
     endAt: row.end_at ?? undefined,
+    lifecycle: (row.lifecycle as Entry['lifecycle']) ?? undefined,
     payload: JSON.parse(row.payload) as Entry['payload'],
     firstSeenAt: row.first_seen_at,
     updatedAt: row.updated_at,
@@ -806,12 +832,12 @@ export async function markExtractFailure(postId: string, error: string, infra = 
 export async function replaceEntriesForPost(postId: string, entries: Entry[]): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const ins = db.prepare(`
-    INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, payload, first_seen_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, lifecycle, payload, first_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       post_id = excluded.post_id, title = excluded.title, url = excluded.url,
       published_at = excluded.published_at, start_at = excluded.start_at, end_at = excluded.end_at,
-      payload = excluded.payload, updated_at = excluded.updated_at
+      lifecycle = excluded.lifecycle, payload = excluded.payload, updated_at = excluded.updated_at
   `);
   const delOne = db.prepare('DELETE FROM entries WHERE id = ?');
   const updPayload = db.prepare('UPDATE entries SET payload = ?, updated_at = ? WHERE id = ?');
@@ -902,11 +928,12 @@ export async function replaceEntriesForPost(postId: string, entries: Entry[]): P
       ins.run(
         merged.id, merged.postId ?? null, merged.gameId, merged.type, merged.source, merged.sourceId,
         merged.title, merged.url ?? null, merged.publishedAt ?? null, merged.startAt ?? null, merged.endAt ?? null,
-        JSON.stringify(merged.payload), firstSeen, now,
+        merged.lifecycle ?? null, JSON.stringify(merged.payload), firstSeen, now,
       );
       rowsById.set(merged.id, {
         ...(target ?? ({} as EntryRow)),
-        id: merged.id, game_id: merged.gameId, type: merged.type, payload: JSON.stringify(merged.payload),
+        id: merged.id, game_id: merged.gameId, type: merged.type,
+        lifecycle: merged.lifecycle ?? null, payload: JSON.stringify(merged.payload),
       } as EntryRow);
     }
     db.exec('COMMIT');
@@ -1065,6 +1092,8 @@ function mergeEntry(existing: StoredEntry, incoming: Entry): Entry {
     publishedAt: Math.max(existing.publishedAt ?? 0, incoming.publishedAt ?? 0),
     startAt,
     endAt,
+    // 最新非空值覆盖，空值不覆盖已有值（未判定不应抹掉已确定的生命周期）
+    lifecycle: incoming.lifecycle ?? existing.lifecycle,
     payload,
   };
 }
@@ -1111,12 +1140,12 @@ export async function mergeDuplicateEntries(gameId?: string): Promise<{
   }
 
   const ins = db.prepare(`
-    INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, payload, first_seen_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO entries (id, post_id, game_id, type, source, source_id, title, url, published_at, start_at, end_at, lifecycle, payload, first_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       post_id = excluded.post_id, title = excluded.title, url = excluded.url,
       published_at = excluded.published_at, start_at = excluded.start_at, end_at = excluded.end_at,
-      payload = excluded.payload, updated_at = excluded.updated_at
+      lifecycle = excluded.lifecycle, payload = excluded.payload, updated_at = excluded.updated_at
   `);
   const delOne = db.prepare('DELETE FROM entries WHERE id = ?');
 
@@ -1155,7 +1184,7 @@ export async function mergeDuplicateEntries(gameId?: string): Promise<{
       ins.run(
         cur.id, cur.postId ?? null, cur.gameId, cur.type, cur.source, cur.sourceId,
         cur.title, cur.url ?? null, cur.publishedAt ?? null, cur.startAt ?? null, cur.endAt ?? null,
-        JSON.stringify(cur.payload), cur.firstSeenAt, now,
+        cur.lifecycle ?? null, JSON.stringify(cur.payload), cur.firstSeenAt, now,
       );
       for (const row of victims) delOne.run(row.id);
       groups++;
@@ -1191,6 +1220,8 @@ export interface EntryQueryInput {
   gameIds?: string[];
   types?: string[];
   statuses?: EntryStatus[];
+  /** 生命周期筛选；unjudged 表示 lifecycle IS NULL 且非公告 */
+  lifecycles?: EntryLifecycleFilter[];
   /** 按条目 id 批量取（深链定位单个条目） */
   ids?: string[];
   /** 关键词：标题、摘要、规范名 LIKE 匹配 */
@@ -1260,6 +1291,21 @@ export async function queryEntries(
       where.push(`json_extract(payload, '$.rewardEndAt') <= ?`);
       params.push(input.rewardTo);
     }
+  }
+  if (input.lifecycles?.length) {
+    const ors: string[] = [];
+    const lifecycleParams: string[] = [];
+    for (const lc of input.lifecycles) {
+      if (lc === 'unjudged') {
+        // 公告的生命周期不适用，不算未判定（见 SPEC §6.2）
+        ors.push(`(lifecycle IS NULL AND type <> 'ANNOUNCEMENT')`);
+      } else {
+        ors.push('lifecycle = ?');
+        lifecycleParams.push(lc);
+      }
+    }
+    where.push(`(${ors.join(' OR ')})`);
+    params.push(...lifecycleParams);
   }
   if (input.statuses?.length) {
     // 与 shared 的 entryStatus 同规则：ended 以北京时间当日 0 点为界

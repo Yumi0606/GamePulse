@@ -22,6 +22,7 @@ export function toEntryDto(e: StoredEntry, nowSec: number): EntryDto {
     publishedAt: e.publishedAt,
     startAt: e.startAt,
     endAt: e.endAt,
+    lifecycle: e.lifecycle,
     rewardEndAt: p.rewardEndAt,
     startTimeKnown: p.startTimeKnown,
     endTimeKnown: p.endTimeKnown,

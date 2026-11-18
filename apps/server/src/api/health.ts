@@ -5,6 +5,7 @@ import { GAMES } from '../core/games.js';
 import {
   countExtractBacklog,
   countOcrImageBacklog,
+  countUnjudgedLifecycle,
   countUnresolvedEvents,
   latestUnresolvedEvent,
   loadMeta,
@@ -22,12 +23,13 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
     '/health',
     { schema: { response: { 200: HealthDto } } },
     async () => {
-      const [meta, extractBacklog, ocrBacklog, unresolved, latest] = await Promise.all([
+      const [meta, extractBacklog, ocrBacklog, unresolved, latest, unjudgedLifecycle] = await Promise.all([
         loadMeta(),
         countExtractBacklog(),
         countOcrImageBacklog(),
         countUnresolvedEvents(),
         latestUnresolvedEvent(),
+        countUnjudgedLifecycle(),
       ]);
       const scan = schedulerStatus();
       return {
@@ -47,6 +49,10 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
           imagesToOcr: ocrBacklog.pending,
           deadImages: ocrBacklog.dead,
           abandonedPosts: extractBacklog.abandoned,
+        },
+        quality: {
+          // 公告生命周期不适用，已在计数中排除
+          unjudgedLifecycle,
         },
         events: {
           unresolved: unresolved.total,

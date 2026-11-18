@@ -129,6 +129,8 @@ function entryItemXml(e: Entry, pubDateFallback: number, sourcePost?: Item): str
   push(gpLine('      ', 'gp:category', e.payload.category));
   push(gpLine('      ', 'gp:startAt', e.startAt));
   push(gpLine('      ', 'gp:endAt', e.endAt));
+  // 生命周期：limited / permanent / event；未判定与公告不输出，订阅者不再靠 endAt 是否为空猜测
+  push(gpLine('      ', 'gp:lifecycle', e.lifecycle));
   // 时分不可信标记：false 表示该端只有日期精度，消费方应忽略时间戳中的时分
   if (e.payload.startTimeKnown === false) lines.push('      <gp:startTimeKnown>false</gp:startTimeKnown>');
   if (e.payload.endTimeKnown === false) lines.push('      <gp:endTimeKnown>false</gp:endTimeKnown>');

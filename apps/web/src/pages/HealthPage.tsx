@@ -78,6 +78,17 @@ export function HealthPage() {
               hint="引用的图片全部到达终态后才入队"
             />
             <Field label="待 OCR 图片" value={health.backlog.imagesToOcr} hint="不含永久失败的图片" />
+            <Field
+              label="生命周期未判定"
+              value={
+                health.quality.unjudgedLifecycle > 0 ? (
+                  <span className="text-warn">{health.quality.unjudgedLifecycle}</span>
+                ) : (
+                  '0'
+                )
+              }
+              hint="非公告条目；可在列表页按「未判定」筛选查看"
+            />
             {health.backlog.deadImages > 0 ? (
               <Field
                 label="永久失败图片"

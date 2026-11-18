@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { ENTRY_STATUSES, ENTRY_TYPES, EntryPageDto, EntrySortSchema } from '@gamepulse/shared';
+import { ENTRY_LIFECYCLE_FILTERS, ENTRY_STATUSES, ENTRY_TYPES, EntryPageDto, EntrySortSchema } from '@gamepulse/shared';
 import { queryEntries } from '../storage/store.js';
 import { toEntryDto } from './mappers.js';
 import { csvParam, enumListParam, intParam, limitParam, offsetParam } from './query.js';
@@ -20,6 +20,8 @@ const EntriesQuery = z.object({
   gameId: csvParam,
   type: enumListParam(ENTRY_TYPES),
   status: enumListParam(ENTRY_STATUSES),
+  /** 生命周期筛选；unjudged 表示未判定（排除公告） */
+  lifecycle: enumListParam(ENTRY_LIFECYCLE_FILTERS),
   /** 按条目 id 取单条：日历/周视图深链跳回列表用 */
   id: csvParam,
   q: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().min(1).optional()),
@@ -45,6 +47,7 @@ export const entriesRoutes: FastifyPluginAsync = async (app) => {
           gameIds: q.gameId,
           types: q.type,
           statuses: q.status,
+          lifecycles: q.lifecycle,
           ids: q.id,
           q: q.q,
           from: q.from,

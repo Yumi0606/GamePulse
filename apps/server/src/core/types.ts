@@ -5,7 +5,11 @@
  *
  * 枚举定义在 @gamepulse/shared，前后端共用同一份，避免两边枚举漂移。
  */
-import type { EntryType as SharedEntryType, ItemType as SharedItemType } from '@gamepulse/shared';
+import type {
+  EntryLifecycle as SharedEntryLifecycle,
+  EntryType as SharedEntryType,
+  ItemType as SharedItemType,
+} from '@gamepulse/shared';
 
 /** 条目大类（全量枚举，与调研报告 §2 对齐） */
 export type ItemType = SharedItemType;
@@ -141,6 +145,8 @@ export interface Entry {
   startAt?: number;
   /** 活动结束时间（锚定后的绝对值），Unix 秒；无法锚定为空 */
   endAt?: number;
+  /** 生命周期（见 SPEC §6）；缺省=未判定或公告不适用 */
+  lifecycle?: SharedEntryLifecycle;
   /** 完整条目负载：schedule 细节（引用型时间/分段/奖励期）、置信度、溯源等 */
   payload: EntryPayload;
 }

@@ -234,21 +234,33 @@ export function WeekPage() {
   const entriesQuery = useQuery({
     queryKey: ['entries-week', { gameId, type, keyword, from: view.start, to: view.end }],
     queryFn: () =>
-      api.entries({ gameId, type, q: keyword, from: view.start, to: view.end, limit: 1000 }),
+      api.entries({
+        gameId,
+        type,
+        q: keyword,
+        from: view.start,
+        to: view.end,
+        lifecycle: 'limited,event',
+        limit: 1000,
+      }),
     placeholderData: keepPreviousData,
   });
 
   // 无开始时间的条目与窗口无关，单独取一次用于下方清单
   const unanchoredQuery = useQuery({
     queryKey: ['entries-unanchored', { gameId, type, keyword }],
-    queryFn: () => api.entries({ gameId, type, q: keyword, status: 'unknown', limit: 100 }),
+    queryFn: () =>
+      api.entries({ gameId, type, q: keyword, status: 'unknown', lifecycle: 'limited,event', limit: 100 }),
     placeholderData: keepPreviousData,
   });
 
-  const entries = entriesQuery.data?.items ?? [];
+  // 服务端已按 lifecycle 过滤，这里再兜一层：周视图只认限时与一次性更新
+  const entries = (entriesQuery.data?.items ?? []).filter(
+    (e) => e.lifecycle === 'limited' || e.lifecycle === 'event',
+  );
   // status=unknown 覆盖「缺开始时间」，这里只保留起止皆空的条目，避免与时间轴上的色条重复
   const unanchored = (unanchoredQuery.data?.items ?? []).filter(
-    (e) => e.startAt === undefined && e.endAt === undefined,
+    (e) => (e.lifecycle === 'limited' || e.lifecycle === 'event') && e.startAt === undefined && e.endAt === undefined,
   );
 
   const startCell = cellIndex(view.start, precision);
@@ -990,6 +1002,29 @@ function renderRow(
   const hasEnd = e.endAt !== undefined;
   if (!hasStart && !hasEnd) return null;
 
+  const name = e.canonicalName ?? e.title;
+  const chipBase = e.category ? `${ENTRY_TYPE_LABEL[e.type]}·${e.category}` : ENTRY_TYPE_LABEL[e.type];
+
+  // 一次性内容更新只占单个时间格，不拉成横条（见 SPEC §9.3）
+  if (e.lifecycle === 'event') {
+    const at = e.startAt ?? e.endAt;
+    if (at === undefined) return null;
+    const cell = cellIndex(at, precision);
+    if (cell < startCell || cell > endCell) return null;
+    const left = (cell - startCell) * cellWidth;
+    const cls = ['gantt-bar-fill', 'event-node', `state-${entryState(e, now)}`];
+    return {
+      entry: e,
+      left,
+      width: cellWidth,
+      cls: cls.join(' '),
+      name,
+      chip: `${chipBase}·更新`,
+      sCell: cell,
+      eCell: cell,
+    };
+  }
+
   const rawS = hasStart ? cellIndex(e.startAt!, precision) : startCell;
   const rawE = hasEnd ? cellIndex(e.endAt!, precision) : endCell;
   if (rawE < startCell || rawS > endCell) return null;
@@ -1006,7 +1041,7 @@ function renderRow(
   if (hasStart && rawS < startCell) cls.push('clip-start');
   if (hasEnd && rawE > endCell) cls.push('clip-end');
 
-  const name = e.canonicalName ?? e.title;
-  const chip = e.category ? `${ENTRY_TYPE_LABEL[e.type]}·${e.category}` : ENTRY_TYPE_LABEL[e.type];
+  // 结束时间未知的限时活动：在标签里显式标注，不只靠渐变色
+  const chip = hasEnd ? chipBase : `${chipBase}·结束未知`;
   return { entry: e, left, width, cls: cls.join(' '), name, chip, sCell: sIdx, eCell: eIdx };
 }

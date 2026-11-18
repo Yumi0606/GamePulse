@@ -11,44 +11,59 @@ import { FilterField, FilterGrid, FilterPanel, controlClass } from '../component
 import { Card, Empty, Pagination, QueryState } from '../components/ui';
 
 /**
- * 首页：即将到期。
+ * 首页：四个区块分别回答四类行动问题。
  *
- * 只回答一个问题「我最近要清什么」：按最近的关键截止时间（活动结束或奖励领取截止）
- * 分成 今天 / 3 天内 / 本周内 / 更晚 / 未定 五组，组内按截止时间升序。
- * 管道健康度不在这里展示，异常时只在顶部留一行可点击提示。
+ * - 即将到期：已开始、限时、有明确且未过的截止时间，按最近截止时间排序并分桶；
+ * - 即将开始：开始时间在未来且生命周期已确定；
+ * - 时间未定：已开始的限时条目，原文没有给出结束时间；
+ * - 奖励待领取：活动已结束，但奖励领取截止还没过。
+ *
+ * 常驻、一次性更新、未判定与公告不进入任何区块（见 SPEC §9.1）。
+ * 各区块独立计数，不再用一个「未结束活动」总数概括。
  */
-const UPCOMING_LIMIT = 200;
+const ACTIVE_LIMIT = 300;
+const UPCOMING_LIMIT = 100;
 const REWARD_LIMIT = 100;
 /** 桶内分页条数：首页是概览，一屏内能看完一组即可 */
 const PAGE_SIZE = 10;
 
-type BucketKey = 'today' | 'soon' | 'week' | 'later' | 'unknown';
+type DueBucketKey = 'today' | 'soon' | 'week' | 'later';
 
-const BUCKETS: { key: BucketKey; title: string; note?: string }[] = [
+const DUE_BUCKETS: { key: DueBucketKey; title: string; note?: string }[] = [
   { key: 'today', title: '今天截止', note: '今天内结束，优先处理' },
   { key: 'soon', title: '3 天内截止' },
   { key: 'week', title: '本周内截止' },
   { key: 'later', title: '更晚' },
-  { key: 'unknown', title: '时间未定', note: '结束时间无法确定：常驻活动或原文未写明' },
 ];
 
-/** 默认折叠的桶：近期要处理的展开，远期与未定的先收起 */
-const DEFAULT_COLLAPSED: Record<BucketKey, boolean> = {
+/** 默认折叠的桶：近期要处理的展开，远期先收起 */
+const DEFAULT_COLLAPSED: Record<DueBucketKey, boolean> = {
   today: false,
   soon: false,
   week: false,
   later: true,
-  unknown: true,
 };
+
+/** 奖励截止是否尚未过去（按北京时间自然日，与状态判定口径一致） */
+function rewardUsable(entry: EntryDto, now: number): number | undefined {
+  return entry.rewardEndAt !== undefined && cstDayDiff(now, entry.rewardEndAt) >= 0
+    ? entry.rewardEndAt
+    : undefined;
+}
 
 /** 关键截止时间：活动结束与奖励领取截止取更早的一个；都没有则视为未定 */
 function keyDeadline(entry: EntryDto, now: number): number | undefined {
-  const end = entry.status === 'ended' ? undefined : entry.endAt;
-  const reward =
-    entry.rewardEndAt !== undefined && cstDayDiff(now, entry.rewardEndAt) >= 0 ? entry.rewardEndAt : undefined;
-  if (end === undefined) return reward;
-  if (reward === undefined) return end;
-  return Math.min(end, reward);
+  const reward = rewardUsable(entry, now);
+  if (entry.endAt === undefined) return reward;
+  if (reward === undefined) return entry.endAt;
+  return Math.min(entry.endAt, reward);
+}
+
+/** 本次排序依据是否为奖励领取截止，用于在卡片上标注「奖励截止」 */
+function rewardIsKey(entry: EntryDto, now: number): boolean {
+  const reward = rewardUsable(entry, now);
+  if (reward === undefined) return false;
+  return entry.endAt === undefined || reward < entry.endAt;
 }
 
 export function HomePage() {
@@ -76,79 +91,101 @@ export function HomePage() {
   const healthQuery = useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 60_000 });
   const now = healthQuery.data?.now ?? Math.floor(Date.now() / 1000);
   const startOfToday = cstStartOfDay(now);
+  const filter = { gameId, type, q: keyword };
 
-  const upcomingQuery = useQuery({
-    queryKey: ['entries', 'upcoming', { gameId, type, keyword, startOfToday }],
+  // 已开始的限时条目：同时供「即将到期」与「时间未定」分桶
+  const activeQuery = useQuery({
+    queryKey: ['entries', 'home-active', { ...filter, startOfToday }],
     queryFn: () =>
       api.entries({
-        gameId,
-        type,
-        q: keyword,
-        from: startOfToday,
+        ...filter,
+        status: 'ongoing',
+        lifecycle: 'limited',
         sort: 'end',
+        order: 'asc',
+        limit: ACTIVE_LIMIT,
+      }),
+  });
+
+  const upcomingQuery = useQuery({
+    queryKey: ['entries', 'home-upcoming', { ...filter, startOfToday }],
+    queryFn: () =>
+      api.entries({
+        ...filter,
+        status: 'not-started',
+        lifecycle: 'limited,permanent,event',
+        sort: 'start',
         order: 'asc',
         limit: UPCOMING_LIMIT,
       }),
   });
 
-  // 结束时间较远但奖励先截止的条目，靠这个查询补进来
   const rewardQuery = useQuery({
-    queryKey: ['entries', 'reward', { gameId, type, keyword, startOfToday }],
+    queryKey: ['entries', 'home-reward', { ...filter, startOfToday }],
     queryFn: () =>
       api.entries({
-        gameId,
-        type,
-        q: keyword,
-        rewardFrom: startOfToday,
+        ...filter,
+        status: 'ended',
+        lifecycle: 'limited,permanent,event',
         sort: 'end',
         order: 'asc',
         limit: REWARD_LIMIT,
       }),
   });
 
-  const items = useMemo(() => {
-    const map = new Map<string, EntryDto>();
-    for (const entry of upcomingQuery.data?.items ?? []) map.set(entry.id, entry);
-    for (const entry of rewardQuery.data?.items ?? []) if (!map.has(entry.id)) map.set(entry.id, entry);
-    return [...map.values()];
-  }, [upcomingQuery.data, rewardQuery.data]);
+  const { due, undated } = useMemo(() => {
+    const dueItems: EntryDto[] = [];
+    const undatedItems: EntryDto[] = [];
+    for (const entry of activeQuery.data?.items ?? []) {
+      // 服务端已按 lifecycle=limited 过滤，这里再兜一层防止口径回退
+      if (entry.lifecycle !== 'limited') continue;
+      if (keyDeadline(entry, now) === undefined) undatedItems.push(entry);
+      else dueItems.push(entry);
+    }
+    dueItems.sort(
+      (a, b) =>
+        (keyDeadline(a, now) ?? 0) - (keyDeadline(b, now) ?? 0) || a.title.localeCompare(b.title, 'zh-CN'),
+    );
+    undatedItems.sort((a, b) => (a.startAt ?? 0) - (b.startAt ?? 0) || a.title.localeCompare(b.title, 'zh-CN'));
+    return { due: dueItems, undated: undatedItems };
+  }, [activeQuery.data, now]);
 
-  const grouped = useMemo(() => {
+  const dueBuckets = useMemo(() => {
     const weekEnd = cstWeekEnd(now);
-    const buckets = new Map<BucketKey, EntryDto[]>(BUCKETS.map((b) => [b.key, []]));
-    const sortKey = new Map<EntryDto, number>();
-
-    for (const entry of items) {
-      const deadline = keyDeadline(entry, now);
-      sortKey.set(entry, deadline ?? Number.POSITIVE_INFINITY);
-      if (deadline === undefined) {
-        buckets.get('unknown')!.push(entry);
-        continue;
-      }
+    const buckets = new Map<DueBucketKey, EntryDto[]>(DUE_BUCKETS.map((b) => [b.key, []]));
+    for (const entry of due) {
+      const deadline = keyDeadline(entry, now) ?? 0;
       const diff = cstDayDiff(now, deadline);
       if (diff <= 0) buckets.get('today')!.push(entry);
       else if (diff <= 3) buckets.get('soon')!.push(entry);
       else if (deadline <= weekEnd) buckets.get('week')!.push(entry);
       else buckets.get('later')!.push(entry);
     }
-
-    for (const list of buckets.values()) {
-      list.sort((a, b) => (sortKey.get(a) ?? 0) - (sortKey.get(b) ?? 0) || a.title.localeCompare(b.title, 'zh-CN'));
-    }
     return buckets;
-  }, [items, now]);
+  }, [due, now]);
+
+  const rewards = useMemo(() => {
+    return (rewardQuery.data?.items ?? [])
+      .filter((e) => e.lifecycle !== undefined && e.rewardEndAt !== undefined && e.rewardEndAt > now)
+      .sort((a, b) => (a.rewardEndAt ?? 0) - (b.rewardEndAt ?? 0) || a.title.localeCompare(b.title, 'zh-CN'));
+  }, [rewardQuery.data, now]);
+
+  const upcoming = useMemo(() => upcomingQuery.data?.items ?? [], [upcomingQuery.data]);
 
   if (entryId) {
     return <Navigate to={`/all?${params.toString()}`} replace />;
   }
 
   const health = healthQuery.data;
+  const loading = activeQuery.isLoading || upcomingQuery.isLoading || rewardQuery.isLoading;
+  const error = activeQuery.error ?? upcomingQuery.error ?? rewardQuery.error;
+  const total = due.length + upcoming.length + undated.length + rewards.length;
   const truncated =
+    (activeQuery.data?.total ?? 0) > (activeQuery.data?.items.length ?? 0) ||
     (upcomingQuery.data?.total ?? 0) > (upcomingQuery.data?.items.length ?? 0) ||
     (rewardQuery.data?.total ?? 0) > (rewardQuery.data?.items.length ?? 0);
-  const loading = upcomingQuery.isLoading || rewardQuery.isLoading;
-  const error = upcomingQuery.error ?? rewardQuery.error;
   const hasFilter = Boolean(gameId || type || keyword);
+  const allLink = `/all${params.toString() ? `?${params}` : ''}`;
 
   return (
     <div className="space-y-4">
@@ -165,11 +202,11 @@ export function HomePage() {
 
       <Card>
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h1 className="text-[17px] font-semibold">即将到期</h1>
+          <h1 className="text-[17px] font-semibold">活动概览</h1>
           <span className="text-[13px] text-ink-soft">
-            {loading ? '正在统计…' : `${items.length} 个未结束活动，按最近的截止时间排列`}
+            {loading ? '正在统计…' : `即将到期 ${due.length} · 即将开始 ${upcoming.length} · 时间未定 ${undated.length} · 奖励待领取 ${rewards.length}`}
           </span>
-          <Link className="ml-auto text-[13px]" to={`/all${params.toString() ? `?${params}` : ''}`}>
+          <Link className="ml-auto text-[13px]" to={allLink}>
             查看全部活动 →
           </Link>
         </div>
@@ -219,31 +256,72 @@ export function HomePage() {
         onReset={() => setParams(new URLSearchParams(), { replace: true })}
       />
 
-      <QueryState loading={loading} error={error} rows={6} onRetry={() => void upcomingQuery.refetch()} />
+      <QueryState
+        loading={loading}
+        error={error}
+        rows={6}
+        onRetry={() => {
+          void activeQuery.refetch();
+          void upcomingQuery.refetch();
+          void rewardQuery.refetch();
+        }}
+      />
 
-      {!loading && !error && items.length === 0 ? (
+      {!loading && !error && total === 0 ? (
         <Card>
-          <Empty>最近没有即将截止的活动。新的官方动态发布后会自动出现在这里。</Empty>
+          <Empty>当前没有需要处理的活动。新的官方动态发布后会自动出现在这里。</Empty>
         </Card>
       ) : null}
 
-      {BUCKETS.map((bucket) => {
-        const list = grouped.get(bucket.key) ?? [];
-        if (list.length === 0) return null;
-        return <BucketSection key={bucket.key} bucket={bucket} list={list} gameName={gameName} now={now} />;
-      })}
+      {due.length > 0 ? (
+        <div className="space-y-3">
+          <h2 className="border-l-4 border-brand pl-2 text-[15px] font-semibold">
+            即将到期 <span className="text-[12px] font-normal tabular-nums text-muted">{due.length} 个</span>
+          </h2>
+          {DUE_BUCKETS.map((bucket) => {
+            const list = dueBuckets.get(bucket.key) ?? [];
+            if (list.length === 0) return null;
+            return <BucketSection key={bucket.key} bucket={bucket} list={list} gameName={gameName} now={now} />;
+          })}
+        </div>
+      ) : null}
+
+      <ListSection
+        title="即将开始"
+        note="开始时间在未来，按开始时间排列"
+        list={upcoming}
+        gameName={gameName}
+        now={now}
+      />
+
+      <ListSection
+        title="时间未定"
+        note="已开始的限时活动，原文没有给出结束时间"
+        list={undated}
+        gameName={gameName}
+        now={now}
+        defaultOpen={false}
+      />
+
+      <ListSection
+        title="奖励待领取"
+        note="活动已结束，奖励领取截止还没过"
+        list={rewards}
+        gameName={gameName}
+        now={now}
+        rewardKey
+      />
 
       {truncated ? (
         <div className="text-[12px] text-muted">
-          仅显示最近 {UPCOMING_LIMIT} 个活动，完整排期请到
-          <Link to={`/all${params.toString() ? `?${params}` : ''}`}>全部活动</Link>。
+          部分区块仅显示最近的条目，完整排期请到<Link to={allLink}>全部活动</Link>。
         </div>
       ) : null}
     </div>
   );
 }
 
-/** 首页不加载来源动态详情，传空表：条目卡只显示「来源动态标题未加载」 */
+/** 首页不加载来源动态详情：条目卡只给跳转到原始动态的入口，不展示 OCR */
 const EMPTY_POSTS = new Map<string, PostDto>();
 
 /**
@@ -256,7 +334,7 @@ function BucketSection({
   gameName,
   now,
 }: {
-  bucket: (typeof BUCKETS)[number];
+  bucket: { key: DueBucketKey; title: string; note?: string };
   list: EntryDto[];
   gameName: (gameId: string) => string;
   now: number;
@@ -278,7 +356,7 @@ function BucketSection({
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
         >
-          <span className="border-l-4 border-brand pl-2 text-[15px] font-semibold">{bucket.title}</span>
+          <span className="text-[14px] font-semibold">{bucket.title}</span>
           {bucket.note ? <span className="text-[12px] font-normal text-muted">{bucket.note}</span> : null}
           <span className="text-[12px] font-normal tabular-nums text-muted">{list.length} 个</span>
           <span className="text-[12px] font-normal text-brand">{open ? '收起' : '展开'}</span>
@@ -295,10 +373,81 @@ function BucketSection({
                 gameName={gameName(entry.gameId)}
                 postById={EMPTY_POSTS}
                 now={now}
+                rewardIsKey={rewardIsKey(entry, now)}
               />
             ))}
           </ul>
           {pager ? <div className="border-t border-line px-1 py-1">{pager}</div> : null}
+        </Card>
+      ) : null}
+    </section>
+  );
+}
+
+/** 单一列表区块（即将开始 / 时间未定 / 奖励待领取），计数与折叠行为同上 */
+function ListSection({
+  title,
+  note,
+  list,
+  gameName,
+  now,
+  defaultOpen = true,
+  rewardKey = false,
+}: {
+  title: string;
+  note: string;
+  list: EntryDto[];
+  gameName: (gameId: string) => string;
+  now: number;
+  defaultOpen?: boolean;
+  /** 排序依据为奖励领取截止时，卡片标注「奖励截止」 */
+  rewardKey?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const current = Math.min(page, pageCount);
+  const visible = list.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const pager =
+    pageCount > 1 ? <Pagination page={current} pageSize={PAGE_SIZE} total={list.length} onChange={setPage} /> : null;
+
+  return (
+    <section>
+      <div className="mb-2">
+        <button
+          type="button"
+          className="flex flex-wrap items-baseline gap-2 text-left"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="border-l-4 border-brand pl-2 text-[15px] font-semibold">{title}</span>
+          <span className="text-[12px] font-normal text-muted">{note}</span>
+          <span className="text-[12px] font-normal tabular-nums text-muted">{list.length} 个</span>
+          <span className="text-[12px] font-normal text-brand">{open ? '收起' : '展开'}</span>
+        </button>
+      </div>
+      {open ? (
+        <Card className="py-1">
+          {list.length === 0 ? (
+            <div className="px-3 py-2 text-[13px] text-muted">暂无</div>
+          ) : (
+            <>
+              {pager ? <div className="border-b border-line px-1 py-1">{pager}</div> : null}
+              <ul className="divide-y divide-line">
+                {visible.map((entry) => (
+                  <EntryCard
+                    key={entry.id}
+                    entry={entry}
+                    gameName={gameName(entry.gameId)}
+                    postById={EMPTY_POSTS}
+                    now={now}
+                    rewardIsKey={rewardKey}
+                  />
+                ))}
+              </ul>
+              {pager ? <div className="border-t border-line px-1 py-1">{pager}</div> : null}
+            </>
+          )}
         </Card>
       ) : null}
     </section>

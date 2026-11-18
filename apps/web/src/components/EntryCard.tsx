@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { EntryDto, PostDto } from '@gamepulse/shared';
-import { ENTRY_TYPE_LABEL, fmtCst } from '@gamepulse/shared';
+import { ENTRY_LIFECYCLE_LABEL, ENTRY_TYPE_LABEL, fmtCst } from '@gamepulse/shared';
 import { fmtBound, fmtCountdown } from '../lib/format';
 import { OcrPanel } from './OcrPanel';
 import { Badge, StatusBadge, SubtleTag } from './ui';
@@ -20,15 +21,17 @@ export function EntryCard({
   gameName,
   postById,
   now,
+  rewardIsKey = false,
 }: {
   entry: EntryDto;
   gameName: string;
   postById: Map<string, PostDto>;
   /** 服务端当前时间（Unix 秒），用于计算剩余时间 */
   now: number;
+  /** 当前排序依据是奖励领取截止：在卡片上显式标注，避免误读成活动结束 */
+  rewardIsKey?: boolean;
 }) {
   const sourceIds = entry.postIds?.length ? entry.postIds : entry.postId ? [entry.postId] : [];
-  const sources = sourceIds.map((id) => postById.get(id)).filter((p): p is PostDto => Boolean(p));
   const showEvidence = entry.estimated === true || entry.confidence < 0.7 || (entry.phases?.length ?? 0) > 0;
   // 合并条目可能挂十几条来源：默认只列前两条，其余折叠
   const [allSources, setAllSources] = useState(false);
@@ -72,6 +75,15 @@ export function EntryCard({
       {/* 第二行：状态、剩余时间、起止时刻 */}
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
         <StatusBadge status={entry.status} />
+        {rewardIsKey ? <Badge tone="warn">奖励截止</Badge> : null}
+        {/* 常驻与一次性更新没有结束时间，标出生命周期避免被读成「结束未知」 */}
+        {entry.lifecycle && entry.lifecycle !== 'limited' ? (
+          <SubtleTag
+            title={entry.lifecycle === 'permanent' ? '常驻条目没有预设结束节点' : '一次性内容更新，本身没有持续期'}
+          >
+            {ENTRY_LIFECYCLE_LABEL[entry.lifecycle]}
+          </SubtleTag>
+        ) : null}
         {countdown ? <span className={`tabular-nums ${countdownTone}`}>{countdown}</span> : null}
         <span className="font-mono text-[12px] tabular-nums text-muted">
           {fmtBound(entry.startAt, entry.startTimeKnown)} → {fmtBound(entry.endAt, entry.endTimeKnown)}
@@ -175,21 +187,27 @@ export function EntryCard({
                 return (
                   <li key={id} className="rounded border border-line bg-surface p-1.5">
                     {post ? (
-                      <div className="flex flex-wrap items-baseline gap-2">
-                        <a href={`/rss/post?id=${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">
-                          {post.title}
-                        </a>
-                        <span className="text-muted">发布于 {fmtCst(post.publishedAt)}</span>
-                      </div>
+                      <>
+                        <div className="flex flex-wrap items-baseline gap-2">
+                          <a href={`/rss/post?id=${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">
+                            {post.title}
+                          </a>
+                          <span className="text-muted">发布于 {fmtCst(post.publishedAt)}</span>
+                        </div>
+                        <OcrPanel postId={id} imageCount={post.images?.length} />
+                      </>
                     ) : (
+                      // 未加载 PostDto（如首页）：不展示 OCR，保留 id 便于核对，并给原始动态页入口
                       <div className="flex flex-wrap items-baseline gap-2">
                         <span className="font-mono">{id}</span>
+                        <Link className="text-brand hover:underline" to={`/posts?id=${encodeURIComponent(id)}`}>
+                          查看原始动态
+                        </Link>
                         <a href={`/rss/post?id=${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">
                           单条 RSS
                         </a>
                       </div>
                     )}
-                    <OcrPanel postId={id} imageCount={post?.images?.length} />
                   </li>
                 );
               })}
@@ -202,9 +220,6 @@ export function EntryCard({
               >
                 {allSources ? '收起来源' : `还有 ${restSources} 条来源`}
               </button>
-            ) : null}
-            {sourceIds.length > 0 && sources.length === 0 ? (
-              <div className="text-muted">来源动态标题未加载（在「全部活动」中可查看）</div>
             ) : null}
           </div>
         </div>

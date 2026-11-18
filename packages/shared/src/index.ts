@@ -30,6 +30,32 @@ export const ENTRY_TYPE_LABEL: Record<EntryType, string> = {
   ANNOUNCEMENT: '公告',
 };
 
+/**
+ * 生命周期：条目的到期性质，与"状态"正交（见 SPEC §6）。
+ * - limited   有预设结束节点
+ * - permanent 没有预设结束节点，长期存在
+ * - event     某日生效的一次性内容更新，本身没有持续期
+ * 未判定与公告不适用都落为 NULL，用 type 区分公告。
+ */
+export const ENTRY_LIFECYCLES = ['limited', 'permanent', 'event'] as const;
+export type EntryLifecycle = (typeof ENTRY_LIFECYCLES)[number];
+
+/** 生命周期筛选的查询取值：unjudged 表示未判定（排除公告） */
+export const ENTRY_LIFECYCLE_FILTERS = [...ENTRY_LIFECYCLES, 'unjudged'] as const;
+export type EntryLifecycleFilter = (typeof ENTRY_LIFECYCLE_FILTERS)[number];
+
+/** 生命周期中文标签；筛选用的 unjudged 与数据取值分开维护 */
+export const ENTRY_LIFECYCLE_LABEL: Record<EntryLifecycle, string> = {
+  limited: '限时',
+  permanent: '常驻',
+  event: '更新',
+};
+
+export const ENTRY_LIFECYCLE_FILTER_LABEL: Record<EntryLifecycleFilter, string> = {
+  ...ENTRY_LIFECYCLE_LABEL,
+  unjudged: '未判定',
+};
+
 // ---- 时间格式化 ----
 
 const CST_DT = new Intl.DateTimeFormat('sv-SE', {
@@ -138,6 +164,11 @@ export const HealthDto = z.object({
     /** 已放弃结构化的动态数：提取失败次数达上限，已不再重试 */
     abandonedPosts: z.number().int(),
   }),
+  /** 数据质量指标：未判定生命周期暴露在这里，避免新空值悄悄积累 */
+  quality: z.object({
+    /** type != ANNOUNCEMENT 且 lifecycle IS NULL 的条目数 */
+    unjudgedLifecycle: z.number().int(),
+  }),
   events: z.object({
     unresolved: z.number().int(),
     cookieSuspect: z.number().int(),
@@ -229,10 +260,12 @@ export const EntryDto = z.object({
   publishedAt: z.number().int().optional(),
   /** 活动开始，Unix 秒；缺省=无法确定 */
   startAt: z.number().int().optional(),
-  /** 活动结束，Unix 秒；缺省=常驻或无法确定 */
+  /** 活动结束，Unix 秒；缺省=结束时间未知或无结束节点，需结合 lifecycle 判断 */
   endAt: z.number().int().optional(),
   /** 奖励领取截止，Unix 秒 */
   rewardEndAt: z.number().int().optional(),
+  /** 生命周期；缺省=未判定或公告不适用 */
+  lifecycle: z.enum(ENTRY_LIFECYCLES).optional(),
   /** false=只有日期精度，前端只显示日期不显示时分 */
   startTimeKnown: z.boolean().optional(),
   endTimeKnown: z.boolean().optional(),
